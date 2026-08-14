@@ -37,6 +37,17 @@
 </section>
 
 <section>
+  <div class="row"><span class="label" data-i18n="closeBehaviorLabel">关闭窗口时</span>
+    <select id="sel-close">
+      <option value="" data-i18n="closeUnset">首次询问（默认）</option>
+      <option value="tray" data-i18n="closeTrayOpt">保留后台（托盘）</option>
+      <option value="quit" data-i18n="closeQuitOpt">完全退出</option>
+      <option value="ask" data-i18n="closeAskOpt">每次询问</option>
+    </select>
+  </div>
+</section>
+
+<section>
   <div class="row"><span class="label" data-i18n="language">语言</span>
     <select id="sel-lang">
       <option value="zh" data-i18n="languageZh">中文</option>
@@ -60,6 +71,8 @@
       statusChecking: '检查中…', statusUpToDate: '已是最新', statusAvailable: '发现新版本',
       statusUnknown: '未检查', noSource: '（未设置）', checkFailed: '检查失败',
       updating: '更新中…', updated: '已更新，重启服务生效', updateFailed: '更新失败',
+      closeBehaviorLabel: '关闭窗口时', closeUnset: '首次询问（默认）', closeTrayOpt: '保留后台（托盘）',
+      closeQuitOpt: '完全退出', closeAskOpt: '每次询问',
       tip: '「从源码构建并安装」见托盘/文件菜单',
     },
     en: {
@@ -69,6 +82,8 @@
       statusChecking: 'Checking…', statusUpToDate: 'Up to date', statusAvailable: 'New version available',
       statusUnknown: 'Not checked', noSource: '(not set)', checkFailed: 'Check failed',
       updating: 'Updating…', updated: 'Updated — restart service to apply', updateFailed: 'Update failed',
+      closeBehaviorLabel: 'On window close', closeUnset: 'Ask on first close (default)', closeTrayOpt: 'Keep in tray',
+      closeQuitOpt: 'Fully quit', closeAskOpt: 'Ask every time',
       tip: '"Build & Install" lives in the tray / File menu',
     },
   };
@@ -100,10 +115,14 @@
     document.getElementById('cfg-source').textContent = state.sourceDir || d.noSource;
     document.getElementById('tip').textContent = d.tip;
     document.getElementById('sel-lang').value = lang;
+    document.getElementById('sel-close').value = state.closeBehavior || '';
   }
 
   window.desktop.onLanguageChanged((l) => { lang = l; applyLang(); render(); });
   document.getElementById('btn-close').addEventListener('click', () => window.desktop.closeSettings());
+  document.getElementById('sel-close').addEventListener('change', (e) => {
+    window.desktop.setCloseBehavior(e.target.value);
+  });
   document.getElementById('sel-lang').addEventListener('change', (e) => {
     window.desktop.setLanguage(e.target.value);
   });

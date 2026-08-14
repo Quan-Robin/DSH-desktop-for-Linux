@@ -38,6 +38,16 @@ const I18N = {
     checkNow: '检查更新', installNow: '立即更新', language: '语言', languageZh: '中文', languageEn: 'English',
     infoPort: '端口', infoSource: '源码目录',
     noSourceDir: '（未设置）',
+    closeBehaviorLabel: '关闭窗口时',
+    closeUnset: '首次询问（默认）',
+    closeTrayOpt: '保留后台（托盘）',
+    closeQuitOpt: '完全退出',
+    closeAskOpt: '每次询问',
+    closeFirstMsg: '关闭窗口后希望如何处理？',
+    closeFirstDetail: '「保留后台」：隐藏到托盘，dsh 服务继续运行；「完全退出」：同时停止 dsh 服务。可在设置中更改。',
+    closeAskMsg: '关闭窗口后如何处理？',
+    closeAskDetail: '「保留后台」继续在托盘运行（dsh 服务不中断）；「完全退出」会同时停止 dsh 服务。',
+    closeCancel: '取消',
   },
   en: {
     file: 'File', settings: 'Settings…', checkUpdate: 'Check for Updates', buildInstall: 'Build & Install',
@@ -56,6 +66,16 @@ const I18N = {
     checkNow: 'Check for Updates', installNow: 'Update Now', language: 'Language', languageZh: '中文', languageEn: 'English',
     infoPort: 'Port', infoSource: 'Source dir',
     noSourceDir: '(not set)',
+    closeBehaviorLabel: 'On window close',
+    closeUnset: 'Ask on first close (default)',
+    closeTrayOpt: 'Keep in tray',
+    closeQuitOpt: 'Fully quit',
+    closeAskOpt: 'Ask every time',
+    closeFirstMsg: 'What should happen when the window is closed?',
+    closeFirstDetail: '"Keep in tray": hide to the tray, dsh keeps running; "Fully quit": stops the dsh service too. You can change this later in Settings.',
+    closeAskMsg: 'What should happen when the window is closed?',
+    closeAskDetail: '"Keep in tray" keeps running in the tray (dsh stays up); "Fully quit" stops the dsh service as well.',
+    closeCancel: 'Cancel',
   },
 };
 
@@ -73,8 +93,10 @@ const DEFAULTS = {
   port: DEFAULT_PORT,
   // How to start dsh: 'npx' (official route, auto-downloads) | 'global' (dsh on PATH) | absolute path to a binary.
   dshCommand: 'npx',
-  // What closing the window does: 'ask' (prompt) | 'tray' (hide, keep running) | 'quit' (exit, stops dsh).
-  onClose: 'ask',
+  // What closing the window does: '' (unset — ask once on first close) | 'tray' | 'quit' | 'ask'.
+  closeBehavior: '',
+  // Legacy alias of closeBehavior (pre-0.1.12), migrated on load.
+  onClose: undefined,
   // Auto-update feed for AppImage (electron-updater). Empty = disabled.
   updateUrl: '',
   // Local source directory for "build & install deb" (self-packaging). Empty = feature hidden.
@@ -98,7 +120,11 @@ let cleaningUp = false;
 function loadConfig() {
   const file = path.join(app.getPath('userData'), 'config.json');
   try {
-    return { ...DEFAULTS, ...JSON.parse(fs.readFileSync(file, 'utf8')) };
+    const loaded = JSON.parse(fs.readFileSync(file, 'utf8'));
+    // Legacy: pre-0.1.12 used onClose; migrate it into closeBehavior.
+    if (loaded.onClose && !loaded.closeBehavior) loaded.closeBehavior = loaded.onClose;
+    delete loaded.onClose;
+    return { ...DEFAULTS, ...loaded };
   } catch {
     return { ...DEFAULTS };
   }
@@ -332,31 +358,47 @@ function createWindow() {
 
   win.on('close', (event) => {
     if (quitting) return;
-    if (config.onClose === 'tray') {
+    if (config.closeBehavior === 'tray') {
       event.preventDefault();
       win.hide();
       return;
     }
-    if (config.onClose === 'quit') {
+    if (config.closeBehavior === 'quit') {
       quitting = true;
       app.quit();
       return;
     }
-    // 'ask': let the user choose keep-in-tray vs full quit.
     event.preventDefault();
+    if (config.closeBehavior === 'ask') {
+      // Ask every time: keep-in-tray vs full quit.
+      const choice = dialog.showMessageBoxSync(win, {
+        type: 'question',
+        title: 'DeepSeek Harness',
+        message: t('closeAskMsg'),
+        detail: t('closeAskDetail'),
+        buttons: [t('closeTrayOpt'), t('closeQuitOpt'), t('closeCancel')],
+        defaultId: 0,
+        cancelId: 2,
+        noLink: true,
+      });
+      if (choice === 0) win.hide();
+      else if (choice === 1) { quitting = true; app.quit(); }
+      return;
+    }
+    // closeBehavior === '' — first close: pick the default behavior once.
     const choice = dialog.showMessageBoxSync(win, {
       type: 'question',
       title: 'DeepSeek Harness',
-      message: '关闭窗口后如何处理？',
-      detail: '「保留后台」继续在托盘运行（dsh 服务不中断）；「完全退出」会同时停止 dsh 服务。',
-      buttons: ['保留后台（托盘）', '完全退出', '取消'],
+      message: t('closeFirstMsg'),
+      detail: t('closeFirstDetail'),
+      buttons: [t('closeTrayOpt'), t('closeQuitOpt'), t('closeAskOpt')],
       defaultId: 0,
-      cancelId: 2,
+      cancelId: 0,
       noLink: true,
     });
-    if (choice === 0) win.hide();
-    else if (choice === 1) { quitting = true; app.quit(); }
-    // choice === 2 (cancel): keep the window open.
+    if (choice === 0) { config.closeBehavior = 'tray'; saveConfig(); win.hide(); }
+    else if (choice === 1) { config.closeBehavior = 'quit'; saveConfig(); quitting = true; app.quit(); }
+    else { config.closeBehavior = 'ask'; saveConfig(); win.hide(); } // this time: tray default
   });
   win.on('closed', () => { win = null; maskCssKey = null; });
 
@@ -509,7 +551,9 @@ let lastChecked = { installed: null, latest: null, update: false, checkedAt: 0 }
 
 function getInstalledDshVersion() {
   return new Promise((resolve) => {
-    execFile('dsh', ['--version'], { timeout: 10000 }, (err, stdout) => {
+    // bash -lc: GUI-launched apps get a bare PATH without ~/.npm-global/bin;
+    // a login shell restores the user's real environment (dsh, npm).
+    execFile('bash', ['-lc', 'dsh --version'], { timeout: 10000 }, (err, stdout) => {
       resolve(err ? null : String(stdout).trim().split('\n')[0]);
     });
   });
@@ -517,7 +561,7 @@ function getInstalledDshVersion() {
 
 function getNpmLatestVersion() {
   return new Promise((resolve) => {
-    execFile('npm', ['view', DSH_PACKAGE, 'version'], { timeout: 20000 }, (err, stdout) => {
+    execFile('bash', ['-lc', `npm view ${DSH_PACKAGE} version`], { timeout: 20000 }, (err, stdout) => {
       resolve(err ? null : String(stdout).trim().split('\n')[0]);
     });
   });
@@ -525,7 +569,7 @@ function getNpmLatestVersion() {
 
 function getNpmGlobalPrefix() {
   return new Promise((resolve) => {
-    execFile('npm', ['prefix', '-g'], { timeout: 10000 }, (err, stdout) => {
+    execFile('bash', ['-lc', 'npm prefix -g'], { timeout: 10000 }, (err, stdout) => {
       resolve(err ? null : String(stdout).trim());
     });
   });
@@ -576,7 +620,7 @@ function updateDsh() {
         return;
       }
       notify('DeepSeek Harness', t('updateStart'));
-      execFile('npm', ['install', '-g', DSH_PACKAGE], { timeout: 180000 }, (err, stdout, stderr) => {
+      execFile('bash', ['-lc', `npm install -g ${DSH_PACKAGE}`], { timeout: 180000 }, (err, stdout, stderr) => {
         if (err) {
           const tail = (stderr || stdout || err.message).split('\n').slice(-6).join('\n');
           dialog.showErrorBox(t('settingsTitle'), t('updateFail', { err: tail }));
@@ -764,6 +808,7 @@ function registerSettingsIpc() {
     language: config.language,
     port: config.port,
     sourceDir: config.sourceDir,
+    closeBehavior: config.closeBehavior || '',
     checkedAt: lastChecked.checkedAt,
     installed: lastChecked.installed,
     latest: lastChecked.latest,
@@ -772,6 +817,11 @@ function registerSettingsIpc() {
   ipcMain.handle('settings:check-update', () => checkDshUpdate(true));
   ipcMain.handle('settings:update-dsh', () => updateDsh());
   ipcMain.handle('settings:close', () => closeSettings());
+  ipcMain.handle('settings:set-close-behavior', (_e, behavior) => {
+    if (!['tray', 'quit', 'ask', ''].includes(behavior)) return;
+    config.closeBehavior = behavior;
+    saveConfig();
+  });
   ipcMain.handle('settings:set-language', (_e, lang) => {
     if (lang !== 'zh' && lang !== 'en') return;
     config.language = lang;

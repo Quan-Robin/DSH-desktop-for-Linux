@@ -90,7 +90,7 @@ The config file lives in the user-data directory (Linux: `~/.config/deepseek-har
 |---|---|---|
 | `port` | `3080` | dsh service port |
 | `dshCommand` | `"npx"` | How to start dsh: `"npx"` (official, auto-downloads); `"global"` (uses `dsh` on PATH); or an absolute path to an executable |
-| `onClose` | `"ask"` | Behavior when the window is closed: `"ask"` (prompt: keep in tray / fully quit / cancel); `"tray"` (hide to tray, keep running); `"quit"` (quit and stop dsh) |
+| `closeBehavior` | `""` | What happens when the window is closed: `""` (unset — asked once on first close, then remembered); `"tray"` (hide to the tray, dsh keeps running); `"quit"` (fully quit and stop dsh); `"ask"` (ask every time). Changeable in the Settings panel |
 | `updateUrl` | `""` | Auto-update feed (AppImage only): a generic HTTP(S) server or GitHub Releases URL. Empty = auto-update disabled |
 | `sourceDir` | `""` | Local source directory: enables "Build & Install" in the tray menu, which packages a deb locally and installs it with system authorization (empty = feature hidden) |
 | `stopExternalDsh` | `true` | On full quit, also stop an externally-started `dsh web` listening on the port (only kills processes whose command line matches `dsh web`; never touches other services; unaffected in tray/background mode) |

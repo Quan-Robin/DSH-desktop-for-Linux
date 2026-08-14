@@ -6,6 +6,7 @@ contextBridge.exposeInMainWorld('desktop', {
   checkUpdate: () => ipcRenderer.invoke('settings:check-update'),
   updateDsh: () => ipcRenderer.invoke('settings:update-dsh'),
   closeSettings: () => ipcRenderer.invoke('settings:close'),
+  setCloseBehavior: (b) => ipcRenderer.invoke('settings:set-close-behavior', b),
   setLanguage: (lang) => ipcRenderer.invoke('settings:set-language', lang),
   onLanguageChanged: (cb) => ipcRenderer.on('language-changed', (_e, lang) => cb(lang)),
 });
