@@ -114,3 +114,6 @@
 - 修复「长会话加载完切换不更新」根因：缓存会话切换时前端只发 session.models（不发 session.history）——webRequest 监听扩展为所有 /api/session.*（带 sessionId 即捕获）；实测 models-only 切换被捕获并跟随
 - 修复「首次加载长会话无响应」：官方余额先行显示（5s 内出数值，不再等全量扫描 12s）；fetchSessions 超时 6s→2.5s、fetchOfficialBalance 8s→5s；首次刷新错峰 8s
 - 诊断日志：webRequest 捕获记录 + 慢刷新耗时写 userData/switch.log
+
+## 0.1.31
+- 修复托盘图标堆积：每次余额刷新曾销毁并重建 SNI 服务（GNOME 每次叠一个新托盘图标）；改为 dbusmenu 内容热更新（setMenu + LayoutUpdated 信号），图标唯一、菜单实时
