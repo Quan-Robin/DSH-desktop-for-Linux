@@ -1,6 +1,10 @@
 # DeepSeek Harness Desktop
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（dsh）的桌面壳应用：用 Electron 窗口内嵌 dsh 的 Web UI，自动管理 dsh 服务进程，并提供系统托盘。
+
+> 这是社区非官方桌面端（第三方项目，与 DeepSeek 官方无关）。
 
 ## 功能
 
