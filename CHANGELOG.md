@@ -2,6 +2,11 @@
 
 本项目的版本更新说明。发布 GitHub Release 时同步引用本文件对应条目。
 
+## 0.1.13 (2026-08-14)
+
+- **修复**：0.1.12 的检查更新修复不彻底——`bash -lc` 依赖 `~/.profile` 的 PATH 配置，而你的 npm 全局目录（`~/.npm-global/bin`）配置在别处，纯净 GUI 环境下仍然找不到 `dsh`。现改为**直接探测常见安装位置**（`~/.npm-global/bin`、`~/.local/bin`、`/usr/bin`）并用**绝对路径执行**，完全不依赖 shell 配置
+- **改进**：检查更新失败时提示**具体失败项**（`dsh --version` 失败 / `npm view` 失败及原因），便于定位
+
 ## 0.1.12 (2026-08-14)
 
 - **修复**：检查更新在桌面快捷方式（GUI 启动）下报「npm view / dsh --version failed」——原因是 GUI 环境的 PATH 不含 `~/.npm-global/bin`，`dsh` 命令找不到；现改为通过 login shell 执行，与终端环境一致

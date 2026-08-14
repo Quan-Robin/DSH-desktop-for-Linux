@@ -549,11 +549,26 @@ function setupAutoUpdater() {
 
 let lastChecked = { installed: null, latest: null, update: false, checkedAt: 0 };
 
+// GUI-launched apps get a bare PATH (no ~/.npm-global/bin etc.); probe the
+// common user install locations so dsh/npm resolve without shell config.
+function probeBin(name) {
+  const dirs = [
+    path.join(os.homedir(), '.npm-global', 'bin'),
+    path.join(os.homedir(), '.local', 'bin'),
+    '/usr/bin',
+  ];
+  for (const dir of dirs) {
+    const p = path.join(dir, name);
+    try { fs.accessSync(p, fs.constants.X_OK); return p; } catch { /* keep looking */ }
+  }
+  return null;
+}
+
 function getInstalledDshVersion() {
   return new Promise((resolve) => {
-    // bash -lc: GUI-launched apps get a bare PATH without ~/.npm-global/bin;
-    // a login shell restores the user's real environment (dsh, npm).
-    execFile('bash', ['-lc', 'dsh --version'], { timeout: 10000 }, (err, stdout) => {
+    const dsh = probeBin('dsh');
+    const args = dsh ? [dsh, '--version'] : ['bash', '-lc', 'dsh --version'];
+    execFile(args[0], args.slice(1), { timeout: 10000 }, (err, stdout) => {
       resolve(err ? null : String(stdout).trim().split('\n')[0]);
     });
   });
@@ -561,7 +576,9 @@ function getInstalledDshVersion() {
 
 function getNpmLatestVersion() {
   return new Promise((resolve) => {
-    execFile('bash', ['-lc', `npm view ${DSH_PACKAGE} version`], { timeout: 20000 }, (err, stdout) => {
+    const npm = probeBin('npm');
+    const args = npm ? [npm, 'view', DSH_PACKAGE, 'version'] : ['bash', '-lc', `npm view ${DSH_PACKAGE} version`];
+    execFile(args[0], args.slice(1), { timeout: 20000 }, (err, stdout) => {
       resolve(err ? null : String(stdout).trim().split('\n')[0]);
     });
   });
@@ -569,7 +586,9 @@ function getNpmLatestVersion() {
 
 function getNpmGlobalPrefix() {
   return new Promise((resolve) => {
-    execFile('bash', ['-lc', 'npm prefix -g'], { timeout: 10000 }, (err, stdout) => {
+    const npm = probeBin('npm');
+    const args = npm ? [npm, 'prefix', '-g'] : ['bash', '-lc', 'npm prefix -g'];
+    execFile(args[0], args.slice(1), { timeout: 10000 }, (err, stdout) => {
       resolve(err ? null : String(stdout).trim());
     });
   });
@@ -593,7 +612,10 @@ async function checkDshUpdate(manual) {
   lastChecked = { installed, latest, update: !!installed && !!latest && compareVersions(latest, installed) > 0, checkedAt: Date.now() };
   if (manual) {
     if (!installed || !latest) {
-      dialog.showErrorBox(t('settingsTitle'), t('updateFail', { err: 'npm view / dsh --version failed' }));
+      const reasons = [];
+      if (!installed) reasons.push(`dsh --version failed (probed: ${probeBin('dsh') || 'not in ~/.npm-global/bin, ~/.local/bin, PATH'})`);
+      if (!latest) reasons.push('npm view failed (network or registry issue)');
+      dialog.showErrorBox(t('settingsTitle'), t('updateFail', { err: reasons.join('\n') }));
     } else if (lastChecked.update) {
       const choice = askBox({
         type: 'question', title: t('settingsTitle'),
@@ -620,7 +642,9 @@ function updateDsh() {
         return;
       }
       notify('DeepSeek Harness', t('updateStart'));
-      execFile('bash', ['-lc', `npm install -g ${DSH_PACKAGE}`], { timeout: 180000 }, (err, stdout, stderr) => {
+      const npm = probeBin('npm');
+      const args = npm ? [npm, 'install', '-g', DSH_PACKAGE] : ['bash', '-lc', `npm install -g ${DSH_PACKAGE}`];
+      execFile(args[0], args.slice(1), { timeout: 180000 }, (err, stdout, stderr) => {
         if (err) {
           const tail = (stderr || stdout || err.message).split('\n').slice(-6).join('\n');
           dialog.showErrorBox(t('settingsTitle'), t('updateFail', { err: tail }));
