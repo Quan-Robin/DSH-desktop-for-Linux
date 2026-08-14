@@ -1,6 +1,6 @@
 {
   "name": "deepseek-harness-desktop",
-  "version": "0.1.13",
+  "version": "0.1.31",
   "description": "Desktop shell for DeepSeek Harness (dsh) — embeds the dsh Web UI in an Electron window with tray and process management",
   "main": "src/main.js",
   "license": "MIT",
@@ -52,6 +52,7 @@
   },
   "dependencies": {
     "dbus-next": "^0.10.2",
-    "electron-updater": "^6.8.9"
+    "electron-updater": "^6.8.9",
+    "fzstd": "^0.1.1"
   }
 }

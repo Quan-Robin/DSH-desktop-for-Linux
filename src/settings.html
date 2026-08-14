@@ -7,7 +7,7 @@
   :root { color-scheme: light dark; }
   body { font-family: system-ui, "Noto Sans CJK SC", sans-serif; margin: 0; padding: 20px 24px; font-size: 13px; }
   h1 { font-size: 15px; margin: 0 0 16px; }
-  .close-btn { position: absolute; top: 12px; right: 14px; border: none; background: transparent; font-size: 16px; line-height: 1; cursor: pointer; opacity: .6; padding: 4px; }
+  .close-btn { position: fixed; top: 12px; right: 14px; border: none; background: transparent; font-size: 16px; line-height: 1; cursor: pointer; opacity: .6; padding: 4px; }
   .close-btn:hover { opacity: 1; }
   section { margin-bottom: 18px; }
   .row { display: flex; align-items: center; justify-content: space-between; margin: 8px 0; gap: 12px; }
@@ -36,6 +36,7 @@
   </div>
 </section>
 
+
 <section>
   <div class="row"><span class="label" data-i18n="closeBehaviorLabel">关闭窗口时</span>
     <select id="sel-close">
@@ -43,6 +44,15 @@
       <option value="tray" data-i18n="closeTrayOpt">保留后台（托盘）</option>
       <option value="quit" data-i18n="closeQuitOpt">完全退出</option>
       <option value="ask" data-i18n="closeAskOpt">每次询问</option>
+    </select>
+  </div>
+</section>
+
+<section>
+  <div class="row"><span class="label" data-i18n="notifyTurnEnd">对话完成提醒</span>
+    <select id="sel-notify">
+      <option value="true" data-i18n="notifyOn">开启（窗口不在前台时通知）</option>
+      <option value="false" data-i18n="notifyOff">关闭</option>
     </select>
   </div>
 </section>
@@ -73,6 +83,7 @@
       updating: '更新中…', updated: '已更新，重启服务生效', updateFailed: '更新失败',
       closeBehaviorLabel: '关闭窗口时', closeUnset: '首次询问（默认）', closeTrayOpt: '保留后台（托盘）',
       closeQuitOpt: '完全退出', closeAskOpt: '每次询问',
+      notifyTurnEnd: '对话完成提醒', notifyOn: '开启（窗口不在前台时通知）', notifyOff: '关闭',
       tip: '「从源码构建并安装」见托盘/文件菜单',
     },
     en: {
@@ -84,6 +95,7 @@
       updating: 'Updating…', updated: 'Updated — restart service to apply', updateFailed: 'Update failed',
       closeBehaviorLabel: 'On window close', closeUnset: 'Ask on first close (default)', closeTrayOpt: 'Keep in tray',
       closeQuitOpt: 'Fully quit', closeAskOpt: 'Ask every time',
+      notifyTurnEnd: 'Turn-finished notification', notifyOn: 'On (notify when window is not focused)', notifyOff: 'Off',
       tip: '"Build & Install" lives in the tray / File menu',
     },
   };
@@ -116,12 +128,16 @@
     document.getElementById('tip').textContent = d.tip;
     document.getElementById('sel-lang').value = lang;
     document.getElementById('sel-close').value = state.closeBehavior || '';
+    document.getElementById('sel-notify').value = String(state.notifyOnTurnEnd !== false);
   }
 
   window.desktop.onLanguageChanged((l) => { lang = l; applyLang(); render(); });
   document.getElementById('btn-close').addEventListener('click', () => window.desktop.closeSettings());
   document.getElementById('sel-close').addEventListener('change', (e) => {
     window.desktop.setCloseBehavior(e.target.value);
+  });
+  document.getElementById('sel-notify').addEventListener('change', (e) => {
+    window.desktop.setNotify(e.target.value === 'true');
   });
   document.getElementById('sel-lang').addEventListener('change', (e) => {
     window.desktop.setLanguage(e.target.value);

@@ -48,6 +48,12 @@ const I18N = {
     closeAskMsg: '关闭窗口后如何处理？',
     closeAskDetail: '「保留后台」继续在托盘运行（dsh 服务不中断）；「完全退出」会同时停止 dsh 服务。',
     closeCancel: '取消',
+    balMenu: '余额', balOfficial: '官方余额', balEstimate: '估算余额',
+    balRefresh: '刷新余额', balCalibrate: '校准（以当前官方余额为基准）',
+    balUncalibrated: '（未校准）', balNoKey: '未找到 API key（~/.dsh/.credentials.yaml）',
+    balSession: '当前会话消耗（预估）', balTurn: '本次对话消耗（预估）', balDetail: '余额详情…',
+    balSessionsTitle: '各会话消耗（预估）', balSessionId: '会话', balSessionTime: '时间', balSessionCost: '消耗', balNoSessions: '（暂无会话记录）',
+    balNote: '「校准」将当前官方余额记为基准，之后按本地 token 用量实时估算，不受官方余额更新延迟影响。当前会话消耗按模型价格估算（峰谷定价 8-17 起生效），官方账单约 3 分钟后确认；价格可在 config.json 的 pricing 中调整。',
   },
   en: {
     file: 'File', settings: 'Settings…', checkUpdate: 'Check for Updates', buildInstall: 'Build & Install',
@@ -76,6 +82,13 @@ const I18N = {
     closeAskMsg: 'What should happen when the window is closed?',
     closeAskDetail: '"Keep in tray" keeps running in the tray (dsh stays up); "Fully quit" stops the dsh service as well.',
     closeCancel: 'Cancel',
+    balMenu: 'Balance', balOfficial: 'Official balance', balEstimate: 'Estimated balance',
+    balRefresh: 'Refresh balance',
+    balCalibrate: 'Calibrate (use official balance as baseline)',
+    balUncalibrated: '(not calibrated)', balNoKey: 'API key not found (~/.dsh/.credentials.yaml)',
+    balSession: 'Current session (est.)', balTurn: 'Last turn (est.)', balDetail: 'Balance details…',
+    balSessionsTitle: 'Per-session cost (est.)', balSessionId: 'Session', balSessionTime: 'Time', balSessionCost: 'Cost', balNoSessions: '(no session records)',
+    balNote: '"Calibrate" records the current official balance as the baseline; afterwards the estimate is derived from local token usage in real time, unaffected by official balance lag. Session/turn costs use per-model pricing (peak/off-peak from 2026-08-17); the official bill confirms within ~3 minutes. Prices are adjustable via pricing in config.json.',
   },
 };
 
@@ -105,6 +118,11 @@ const DEFAULTS = {
   stopExternalDsh: true,
   // UI language: 'zh' | 'en'.
   language: 'zh',
+  // Notify when a conversation turn finishes and the app is not focused.
+  notifyOnTurnEnd: true,
+  // Manual "current session" override (full session id) picked in the balance
+  // details page; empty = follow the server's last-active session.
+  balanceSessionId: '',
 };
 
 let config = null;
@@ -348,17 +366,48 @@ function createWindow() {
 
   // Keep the settings overlay centered when the main window is resized.
   win.on('resize', () => {
-    if (settingsView && !win.isDestroyed()) settingsView.setBounds(centeredSettingsBounds());
+    if (overlayView && !win.isDestroyed()) overlayView.setBounds(centeredOverlayBounds());
   });
 
   // A page reload drops injected CSS — re-apply the mask if the overlay is open.
   win.webContents.on('did-navigate', () => {
-    if (settingsView) applySettingsMask();
+    if (overlayView) applyOverlayMask();
   });
 
+  // Follow session switches made INSIDE this window: opening a conversation
+  // makes the frontend POST /api/session.history with the session id. The
+  // server exposes no "current session" state, but we can observe the
+  // request and make it our current session (auto-follows browsing switches).
+  try {
+    const ses = win.webContents.session;
+    // Follow session switches made INSIDE this window. Any /api/session.*
+    // request carrying a session id counts as "the user opened that session"
+    // (the frontend may use different RPCs depending on its cache state).
+    ses.webRequest.onBeforeRequest({ urls: ['http://127.0.0.1:*/api/session.*'] }, (details, callback) => {
+      try {
+        const raw = details.uploadData && details.uploadData[0] && details.uploadData[0].bytes;
+        if (raw) {
+          const body = JSON.parse(Buffer.from(raw).toString('utf8'));
+          const method = body && body.method;
+          const sid = body && body.payload && body.payload.sessionId;
+          if (typeof sid === 'string' && sid.startsWith('session-')) {
+            config.balanceSessionId = sid;
+            saveConfig();
+            refreshBalance();
+          }
+          // Diagnostic trace for session-switch debugging.
+          try {
+            const line = `${new Date().toISOString()} ${method || '?'} ${sid || 'no-sid'}`;
+            require('fs').appendFileSync(path.join(app.getPath('userData'), 'switch.log'), line + '\n');
+          } catch { /* non-fatal */ }
+        }
+      } catch { /* non-fatal */ }
+      callback({});
+    });
+  } catch { /* webRequest unavailable — manual picking still works */ }
+
   win.on('close', (event) => {
-    if (quitting) return;
-    if (config.closeBehavior === 'tray') {
+    if (quitting) return;    if (config.closeBehavior === 'tray') {
       event.preventDefault();
       win.hide();
       return;
@@ -666,9 +715,223 @@ function updateDsh() {
 // ---------- menus ----------
 
 const { createSniTray } = require('./sni');
+const balanceApi = require('./balance');
+
+// ---------- balance & usage ----------
+
+let balanceState = {
+  official: null, currency: 'CNY', consumed: 0, hitRate: 0,
+  estimated: null, calibrated: false, error: null,
+  sessionCost: 0, turnCost: 0,
+  currentId: null,
+  sessions: [],
+};
+let lastMenuKey = '';
+const usageCache = new Map();
+const USAGE_STATE_FILE = () => path.join(app.getPath('userData'), 'usage-state.json');
+
+// Re-entrancy guard: the 10s timer and manual refreshes share one in-flight
+// request; callers get the same promise instead of stacking fetches.
+let balancePromise = null;
+function refreshBalance() {
+  if (balancePromise) return balancePromise;
+  balancePromise = doRefresh().finally(() => { balancePromise = null; });
+  return balancePromise;
+}
+
+let lastNotifiedTurnEndSeq = 0; // 0 = not yet initialized (first scan is the baseline)
+
+function checkTurnEnd(turnInfo) {
+  // Conversation-finished notification: a new turn/end event means the last
+  // turn completed. Only notify when the app is not focused; clicking the
+  // notification brings the window back to the foreground.
+  const seq = turnInfo && turnInfo.lastTurnEndSeq ? turnInfo.lastTurnEndSeq : 0;
+  if (seq <= lastNotifiedTurnEndSeq) return;
+  if (lastNotifiedTurnEndSeq === 0) {
+    lastNotifiedTurnEndSeq = seq; // baseline on first scan — no notification
+    return;
+  }
+  lastNotifiedTurnEndSeq = seq;
+  if (config.notifyOnTurnEnd !== false && (!win || !win.isFocused())) {
+    const body = turnInfo.lastSummary ? turnInfo.lastSummary.slice(0, 80) : t('turnDoneBody');
+    const n = new Notification({ title: t('turnDoneTitle'), body });
+    n.on('click', () => { if (win) { win.show(); win.focus(); } });
+    n.show();
+  }
+}
+
+async function doRefresh() {
+  const t0 = Date.now();
+  const logSlow = (label) => {
+    const ms = Date.now() - t0;
+    if (ms > 500) {
+      try {
+        require('fs').appendFileSync(path.join(app.getPath('userData'), 'switch.log'), `[perf] ${label} ${ms}ms\n`);
+      } catch { /* non-fatal */ }
+    }
+  };
+  const pricing = config.pricing || {};
+  // Kick off the three independent data sources in parallel so a slow one
+  // does not serialize the refresh. The official balance resolves first
+  // (~5s cap) and is shown immediately; the local usage scan (worker thread,
+  // can take 10s+ on large session files) lands afterwards — the window is
+  // never left blank while the scan runs.
+  const serverP = balanceApi.fetchSessions(config.port).catch(() => null);
+  const usageP = balanceApi.computeUsage(usageCache);
+  const officialP = (async () => {
+    const key = balanceApi.getApiKey();
+    if (!key) return { error: t('balNoKey') };
+    try {
+      const bal = await balanceApi.fetchOfficialBalance(key);
+      return { bal };
+    } catch (e) { return { error: e.message }; }
+  })();
+  // Official balance first — show it as soon as it resolves.
+  const officialRes = await officialP;
+  if (officialRes.error) {
+    if (officialRes.error === t('balNoKey')) balanceState.official = null;
+    balanceState.error = officialRes.error;
+  } else {
+    balanceState.official = officialRes.bal.total;
+    balanceState.currency = officialRes.bal.currency;
+    balanceState.error = null;
+  }
+  const earlyKey = JSON.stringify([balanceState.official, balanceState.estimated, balanceState.calibrated, balanceState.sessionCost.toFixed(4), balanceState.turnCost.toFixed(4)]);
+  if (earlyKey !== lastMenuKey) {
+    lastMenuKey = earlyKey;
+    applyMenus();
+  }
+  // Server session list (2.5s cap).
+  const serverRaw = await serverP;
+  // Key-consistency guard: the dsh web instance must belong to the same
+  // DSH_HOME as our local scan (~/.dsh, key ). If the server reports
+  // sessions that do not exist locally, it is another instance (e.g. the
+  // ~/.dsh-cc home with a different API key) — fall back to the local scan
+  // so we never mix another key's consumption into this key's balance.
+  let server = serverRaw && serverRaw.length ? serverRaw : null;
+  if (server && server.length) {
+    const allLocal = server.every((s) => balanceApi.findSessionFile(s.id));
+    if (!allLocal) server = null;
+  }
+  // Cost numbers always come from the local scan (the usage-event口径 the
+  // user validated); the server is used only to pick the ACTIVE session
+  // (follows what the user is working on / switched to in the web UI).
+  const usage = await usageP;
+  balanceState.consumed = balanceApi.costOfByModel(usage.byModel, pricing);
+  balanceState.turnCost = balanceApi.costOfByModel(usage.userMsgByModel, pricing);
+  balanceState.sessions = usage.sessions.map((s) => ({
+    id: s.id,
+    title: null,
+    mtimeMs: s.mtimeMs,
+    cost: balanceApi.costOfByModel(s.byModel, pricing),
+  }));
+  let activeId = null;
+  if (server && server.length) {
+    // Manual override: the user picked a session in the balance details page.
+    if (config.balanceSessionId && server.some((s) => s.id === config.balanceSessionId)) {
+      activeId = config.balanceSessionId;
+    } else {
+      const cur = server.find((s) => s.running && !s.blank)
+        || server.filter((s) => !s.blank).sort((a, b) => b.updatedAt - a.updatedAt)[0]
+        || null;
+      activeId = cur ? cur.id : null;
+    }
+  }
+  if (!activeId) activeId = (usage.sessions[0] || {}).id || null; // local fallback (newest)
+  balanceState.currentId = activeId;
+  const sess = usage.sessions.find((s) => s.id === activeId);
+  balanceState.sessionCost = sess ? balanceApi.costOfByModel(sess.byModel, pricing) : 0;
+  // "Last turn" follows the CURRENT session (not the newest file): usage since
+  // its last user/message — taken from the worker's cached parse, so no
+  // synchronous zstd/parse ever runs on the main process.
+  balanceState.turnCost = sess ? balanceApi.costOfByModel(sess.userMsgByModel, pricing) : 0;
+  checkTurnEnd(sess);
+  balanceState.hitRate = 0; // server path has no per-session hit rate; kept for compatibility
+  const state = balanceApi.loadState(USAGE_STATE_FILE());
+  if (state && state.baselineBalance != null && state.baselineConsumed != null) {
+    balanceState.calibrated = true;
+    const localGain = balanceState.consumed - state.baselineConsumed;
+    if (localGain > 0.0001) {
+      // Real-time estimate: baseline minus local usage since calibration.
+      balanceState.estimated = state.baselineBalance - localGain;
+    } else {
+      // No local usage since calibration — follow the live official balance.
+      balanceState.estimated = balanceState.official;
+    }
+    // Auto re-calibrate when the estimate drifts far from the live official
+    // balance (usage we cannot see, e.g. other clients or unfinished turns).
+    if (balanceState.official != null && Math.abs(balanceState.estimated - balanceState.official) > 0.5) {
+      balanceApi.saveState(USAGE_STATE_FILE(), {
+        calibratedAt: Date.now(),
+        baselineBalance: balanceState.official,
+        baselineConsumed: balanceState.consumed,
+      });
+      balanceState.estimated = balanceState.official;
+    }
+  } else {
+    balanceState.calibrated = false;
+    balanceState.estimated = balanceState.official;
+  }
+  // Rebuild menus only when the displayed numbers actually change; the 10s
+  // refresh then costs nothing when nothing moved (cached usage scan).
+  const menuKey = JSON.stringify([balanceState.official, balanceState.estimated, balanceState.calibrated, balanceState.sessionCost.toFixed(4), balanceState.turnCost.toFixed(4)]);
+  if (menuKey !== lastMenuKey) {
+    lastMenuKey = menuKey;
+    applyMenus();
+  }
+  logSlow('refresh');
+  return balanceState;
+}
+
+async function calibrateBalance() {
+  let balance = balanceState.official;
+  if (balance == null) {
+    const key = balanceApi.getApiKey();
+    if (key) {
+      try { balance = (await balanceApi.fetchOfficialBalance(key)).total; } catch { /* keep null */ }
+    }
+  }
+  const usage = await balanceApi.computeUsage(usageCache);
+  balanceApi.saveState(USAGE_STATE_FILE(), {
+    calibratedAt: Date.now(),
+    baselineBalance: balance,
+    baselineConsumed: balanceApi.costOfByModel(usage.byModel, config.pricing || {}),
+  });
+  return refreshBalance();
+}
+
+function balanceMenuItems() {
+  const fmt = (v) => (v == null ? '—' : `¥${Number(v).toFixed(2)}`);
+  const sessionsSub = (balanceState.sessions || []).slice(0, 10).map((s) => {
+    const isCur = s.id === balanceState.currentId;
+    const title = s.title ? s.title.slice(0, 24) : (s.id || '').slice(0, 8);
+    return {
+      label: `${isCur ? '✓ ' : ''}${title} — ${fmt(s.cost)}`,
+      type: 'checkbox',
+      checked: isCur,
+      click: () => {
+        config.balanceSessionId = s.id;
+        saveConfig();
+        refreshBalance();
+      },
+    };
+  });
+  return [
+    { label: `${t('balOfficial')}: ${fmt(balanceState.official)}`, enabled: false },
+    { label: `${t('balEstimate')}: ${fmt(balanceState.estimated)}${balanceState.calibrated ? '' : ` ${t('balUncalibrated')}`}`, enabled: false },
+    { label: `${t('balSession')}: ${fmt(balanceState.sessionCost)} | ${t('balTurn')}: ${fmt(balanceState.turnCost)}`, enabled: false },
+    { type: 'separator' },
+    { label: t('balSessionsTitle'), submenu: sessionsSub.length ? sessionsSub : [{ label: t('balNoSessions'), enabled: false }] },
+    { label: t('balDetail'), click: () => openBalance() },
+    { label: t('balRefresh'), click: () => refreshBalance() },
+    { label: t('balCalibrate'), click: () => calibrateBalance() },
+  ];
+}
 
 function trayMenuTemplate() {
   return [
+    ...balanceMenuItems(),
+    { type: 'separator' },
     { label: t('trayShow'), click: () => toggleWindow() },
     { label: t('trayBrowser'), click: () => shell.openExternal(appUrl()) },
     { label: t('trayRestart'), click: () => restartDsh() },
@@ -699,21 +962,54 @@ function appMenuTemplate() {
     { role: 'viewMenu', label: t('view') },
     { role: 'windowMenu', label: t('window') },
     { label: t('help'), enabled: false, submenu: [] }, // Help not implemented yet — disabled
+    { label: t('balMenu'), submenu: balanceMenuItems() }, // rightmost position
   ];
 }
 
-// Rebuild application menu and tray after a language switch.
+// Rebuild application menu and tray after a language switch / balance change.
 function applyMenus() {
   Menu.setApplicationMenu(Menu.buildFromTemplate(appMenuTemplate()));
   if (process.platform === 'linux' && process.env.WAYLAND_DISPLAY) {
-    if (sniTray && sniTray.destroy) {
-      try { sniTray.destroy(); } catch { /* ignore */ }
-      sniTray = null;
+    if (sniTray && sniTray.setMenu) {
+      // Hot-update the SNI menu in place — re-creating the service on every
+      // balance refresh made GNOME stack a new tray icon each time.
+      try { sniTray.setMenu(trayMenuItems()); } catch { /* fall through to recreate */ }
+      return;
     }
     createTray();
   } else if (tray) {
     tray.setContextMenu(Menu.buildFromTemplate(trayMenuTemplate()));
   }
+}
+
+// Convert Electron-style template items to the SNI dbusmenu shape.
+function sniMenuItems(items) {
+  return items.map((it) => {
+    if (it.type === 'separator') return { separator: true };
+    return {
+      label: it.label,
+      action: it.click || (() => {}),
+      enabled: it.enabled !== false,
+      ...(it.submenu ? { children: sniMenuItems(it.submenu) } : {}),
+    };
+  });
+}
+
+// Shared tray menu (SNI and Electron-Tray fallback).
+function trayMenuItems() {
+  return [
+    ...sniMenuItems(balanceMenuItems()),
+    { separator: true },
+    { label: t('trayShow'), action: () => toggleWindow() },
+    { label: t('trayBrowser'), action: () => shell.openExternal(appUrl()) },
+    { label: t('trayRestart'), action: () => restartDsh() },
+    { label: t('settings'), action: () => openSettings() },
+    ...(config.sourceDir
+      ? [{ label: t('buildInstall'), action: () => buildAndInstall() }]
+      : []),
+    { separator: true },
+    { label: t('exit'), action: () => { quitting = true; app.quit(); } },
+  ];
 }
 
 function createTray() {
@@ -723,17 +1019,7 @@ function createTray() {
     createSniTray({
       iconPath: TRAY_ICON_PATH,
       title: 'DeepSeek Harness',
-      menuItems: [
-        { label: t('trayShow'), action: () => toggleWindow() },
-        { label: t('trayBrowser'), action: () => shell.openExternal(appUrl()) },
-        { label: t('trayRestart'), action: () => restartDsh() },
-        { label: t('settings'), action: () => openSettings() },
-        ...(config.sourceDir
-          ? [{ label: t('buildInstall'), action: () => buildAndInstall() }]
-          : []),
-        { separator: true },
-        { label: t('exit'), action: () => { quitting = true; app.quit(); } },
-      ],
+      menuItems: trayMenuItems(),
       onActivate: () => toggleWindow(),
     }).then((handle) => {
       sniTray = handle;
@@ -758,34 +1044,35 @@ function toggleWindow() {
   else { win.show(); win.focus(); }
 }
 
-// ---------- settings window ----------
+// ---------- in-window overlays (settings / balance) ----------
 
-let settingsView = null;
+let overlayView = null;
+let overlayPage = '';
 let maskCssKey = null;
 
-// Dim + desaturate the main page and block its clicks while the settings
-// overlay is open, so the modal layering is obvious.
-const SETTINGS_MASK_CSS = `
-  #dsh-settings-mask {
+// Dim + desaturate the main page and block its clicks while an overlay is
+// open, so the modal layering is obvious.
+const OVERLAY_MASK_CSS = `
+  #dsh-overlay-mask {
     position: fixed; inset: 0; z-index: 2147483647;
     background: rgba(0, 0, 0, 0.45);
   }
   html { filter: grayscale(0.7) brightness(0.65) !important; }
 `;
 
-function applySettingsMask() {
+function applyOverlayMask() {
   if (maskCssKey || !win || win.isDestroyed()) return;
-  win.webContents.insertCSS(SETTINGS_MASK_CSS).then((key) => { maskCssKey = key; }).catch(() => {});
+  win.webContents.insertCSS(OVERLAY_MASK_CSS).then((key) => { maskCssKey = key; }).catch(() => {});
 }
 
-function removeSettingsMask() {
+function removeOverlayMask() {
   if (!maskCssKey || !win || win.isDestroyed()) return;
   const key = maskCssKey;
   maskCssKey = null;
   win.webContents.removeInsertedCSS(key).catch(() => {});
 }
 
-function centeredSettingsBounds() {
+function centeredOverlayBounds() {
   const size = { width: 460, height: 400 };
   const cb = win ? win.getContentBounds() : { width: 1280, height: 820 };
   return {
@@ -796,12 +1083,19 @@ function centeredSettingsBounds() {
   };
 }
 
-function openSettings() {
+function openOverlay(page) {
   if (!win) { boot(); return; }
-  if (settingsView) { settingsView.setBounds(centeredSettingsBounds()); settingsView.webContents.focus(); return; }
+  if (overlayView) {
+    if (overlayPage === page) {
+      overlayView.setBounds(centeredOverlayBounds());
+      overlayView.webContents.focus();
+      return;
+    }
+    closeOverlay();
+  }
   // In-window overlay: Wayland forbids positioning standalone windows (the
-  // compositor parks them at screen edges), so we embed the settings panel
-  // as a child view with bounds relative to the main window — always centered.
+  // compositor parks them at screen edges), so we embed the page as a child
+  // view with bounds relative to the main window — always centered.
   const view = new WebContentsView({
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
@@ -810,22 +1104,29 @@ function openSettings() {
       sandbox: false,
     },
   });
-  settingsView = view;
+  overlayView = view;
+  overlayPage = page;
   win.contentView.addChildView(view);
-  view.setBounds(centeredSettingsBounds());
-  view.webContents.loadFile(path.join(__dirname, 'settings.html'));
-  view.webContents.on('destroyed', () => { if (settingsView === view) settingsView = null; });
-  applySettingsMask();
+  view.setBounds(centeredOverlayBounds());
+  view.webContents.loadFile(path.join(__dirname, page));
+  view.webContents.on('destroyed', () => {
+    if (overlayView === view) { overlayView = null; overlayPage = ''; }
+  });
+  applyOverlayMask();
 }
 
-function closeSettings() {
-  removeSettingsMask();
-  if (!settingsView || !win || win.isDestroyed()) return;
-  const view = settingsView;
-  settingsView = null;
+function closeOverlay() {
+  removeOverlayMask();
+  if (!overlayView || !win || win.isDestroyed()) return;
+  const view = overlayView;
+  overlayView = null;
+  overlayPage = '';
   win.contentView.removeChildView(view);
   view.webContents.close();
 }
+
+function openSettings() { openOverlay('settings.html'); }
+function openBalance() { openOverlay('balance.html'); }
 
 function registerSettingsIpc() {
   ipcMain.handle('settings:get-state', () => ({
@@ -833,28 +1134,42 @@ function registerSettingsIpc() {
     port: config.port,
     sourceDir: config.sourceDir,
     closeBehavior: config.closeBehavior || '',
+    notifyOnTurnEnd: config.notifyOnTurnEnd !== false,
     checkedAt: lastChecked.checkedAt,
     installed: lastChecked.installed,
     latest: lastChecked.latest,
     update: lastChecked.update,
+    balance: balanceState,
   }));
   ipcMain.handle('settings:check-update', () => checkDshUpdate(true));
   ipcMain.handle('settings:update-dsh', () => updateDsh());
-  ipcMain.handle('settings:close', () => closeSettings());
+  ipcMain.handle('settings:close', () => closeOverlay());
   ipcMain.handle('settings:set-close-behavior', (_e, behavior) => {
     if (!['tray', 'quit', 'ask', ''].includes(behavior)) return;
     config.closeBehavior = behavior;
     saveConfig();
+  });
+  ipcMain.handle('settings:set-notify', (_e, on) => {
+    config.notifyOnTurnEnd = !!on;
+    saveConfig();
+  });
+  ipcMain.handle('settings:set-current-session', (_e, id) => {
+    config.balanceSessionId = typeof id === 'string' ? id : '';
+    saveConfig();
+    refreshBalance();
   });
   ipcMain.handle('settings:set-language', (_e, lang) => {
     if (lang !== 'zh' && lang !== 'en') return;
     config.language = lang;
     saveConfig();
     applyMenus();
-    if (settingsView && !settingsView.webContents.isDestroyed()) {
-      settingsView.webContents.send('language-changed', lang);
+    if (overlayView && !overlayView.webContents.isDestroyed()) {
+      overlayView.webContents.send('language-changed', lang);
     }
   });
+  ipcMain.handle('settings:get-balance', () => balanceState);
+  ipcMain.handle('settings:refresh-balance', () => refreshBalance());
+  ipcMain.handle('settings:calibrate-balance', () => calibrateBalance());
 }
 
 // ---------- app lifecycle ----------
@@ -876,6 +1191,12 @@ if (!gotLock) {
     boot();
     // Startup auto-check for a newer dsh on npm (non-intrusive notification).
     setTimeout(() => checkDshUpdate(false), 4000);
+    // Balance & usage summary (official balance + local token estimate).
+    setTimeout(() => refreshBalance().catch((e) => console.error('[balance] init failed:', e.message)), 8000);
+    // Periodic refresh: session files grow while chatting; the estimate rolls
+    // forward and settles once the official billing confirms (~3 min).
+    // Menus are only rebuilt when displayed values change (see refreshBalance).
+    setInterval(() => refreshBalance().catch(() => {}), 10000);
 
     app.on('activate', () => {
       if (win) { win.show(); win.focus(); } else boot();

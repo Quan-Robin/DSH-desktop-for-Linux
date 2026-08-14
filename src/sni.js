@@ -43,18 +43,41 @@ function buildIconPixmap(iconPath) {
 class Dbmenu extends dbus.interface.Interface {
   constructor(items) {
     super('com.canonical.dbusmenu');
-    // items: [{label, action} | {separator: true}]
+    // items: [{label, action, children?} | {separator: true}] — nested
+    // children get their own ids so Event() can route clicks to them.
     this._items = items;
+    this._rev = 0;
+    this._assignIds(items);
+  }
+
+  _assignIds(items) {
     this._ids = new Map(); // id -> item
     let id = 1;
-    for (const item of items) {
-      if (item.separator) {
-        this._ids.set(id, { separator: true });
-      } else {
-        this._ids.set(id, item);
+    const assign = (list) => {
+      for (const item of list) {
+        if (item.separator) {
+          this._ids.set(id, { separator: true });
+        } else {
+          this._ids.set(id, item);
+        }
+        item._id = id++;
+        if (item.children) assign(item.children);
       }
-      item._id = id++;
-    }
+    };
+    assign(items);
+  }
+
+  // Hot-update the menu contents in place (no service re-registration, so the
+  // desktop shell keeps the single tray icon). Emits LayoutUpdated so an open
+  // menu refreshes; GetLayout always serves the current items anyway.
+  setMenu(items) {
+    this._items = items;
+    this._assignIds(items);
+    this.LayoutUpdated(++this._rev, 0);
+  }
+
+  LayoutUpdated(revision, parent) {
+    return [revision, parent];
   }
 
   get Version() { return 3; }
@@ -70,13 +93,15 @@ class Dbmenu extends dbus.interface.Interface {
       enabled: new dbus.Variant('b', true),
       visible: new dbus.Variant('b', true),
       type: new dbus.Variant('s', 'normal'),
+      ...(item.children ? { 'children-display': new dbus.Variant('s', 'submenu') } : {}),
     };
   }
 
   GetLayout() {
     // children is av: every child must be a Variant wrapping (ia{sv}av).
-    const children = this._items.map((item) =>
-      new dbus.Variant('(ia{sv}av)', [item._id, this.propsFor(item), []]));
+    const build = (list) => list.map((item) =>
+      new dbus.Variant('(ia{sv}av)', [item._id, this.propsFor(item), item.children ? build(item.children) : []]));
+    const children = build(this._items);
     const root = [0, {
       type: new dbus.Variant('s', 'root'),
       'children-display': new dbus.Variant('s', 'submenu'),
@@ -116,6 +141,9 @@ Dbmenu.configureMembers({
     GetGroupProperties: { inSignature: 'aias', outSignature: 'a(ia{sv})' },
     Event: { inSignature: 'isvu', outSignature: '' },
     AboutToShow: { inSignature: 'i', outSignature: 'b' },
+  },
+  signals: {
+    LayoutUpdated: { signature: 'ui' },
   },
 });
 
@@ -219,6 +247,7 @@ async function createSniTray({ iconPath, title, menuItems, onActivate, onSeconda
         return {
           serviceName,
           pixmap: iface._pixmap,
+          setMenu: (items) => menu.setMenu(items),
           destroy: () => {
             try { bus.unexport('/StatusNotifierItem', iface); } catch { /* ignore */ }
             try { bus.unexport('/MenuBar', menu); } catch { /* ignore */ }

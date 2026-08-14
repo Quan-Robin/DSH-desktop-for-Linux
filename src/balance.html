@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>DeepSeek Harness 余额</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: system-ui, "Noto Sans CJK SC", sans-serif; margin: 0; padding: 20px 24px; font-size: 13px; }
+  h1 { font-size: 15px; margin: 0 0 16px; }
+  section { margin-bottom: 18px; }
+  .row { display: flex; align-items: center; justify-content: space-between; margin: 8px 0; gap: 12px; }
+  .label { color: rgba(128,128,128,1); }
+  .val { font-variant-numeric: tabular-nums; }
+  .muted { color: rgba(128,128,128,1); font-size: 12px; }
+  button { padding: 4px 14px; border-radius: 6px; border: 1px solid rgba(128,128,128,.4); background: transparent; cursor: pointer; }
+  button:disabled { opacity: .5; cursor: default; }
+  button.primary { background: #4d6bfe; border-color: #4d6bfe; color: #fff; }
+  .close-btn { position: fixed; top: 12px; right: 14px; border: none; background: transparent; font-size: 16px; line-height: 1; cursor: pointer; opacity: .6; padding: 4px; }
+  .close-btn:hover { opacity: 1; }
+  .status-ok { color: #2e7d32; }
+  .status-new { color: #c62828; }
+</style>
+</head>
+<body>
+<h1 data-i18n="balTitle">余额</h1>
+<button class="close-btn" id="btn-close" title="Close" aria-label="Close">✕</button>
+
+<section>
+  <div class="row"><span class="label" data-i18n="balOfficial">官方余额</span><span class="val" id="bal-official">…</span></div>
+  <div class="row"><span class="label" data-i18n="balEstimate">估算余额</span><span class="val" id="bal-estimate">…</span></div>
+  <div class="row"><span class="label" data-i18n="balSession">当前会话消耗（预估）</span><span class="val" id="bal-session">…</span></div>
+  <div class="row"><span class="label" data-i18n="balTurn">本次对话消耗（预估）</span><span class="val" id="bal-turn">…</span></div>
+  <div class="row">
+    <button id="btn-refresh" data-i18n="balRefresh">刷新余额</button>
+    <button id="btn-calibrate" class="primary" data-i18n="balCalibrate">校准（以当前官方余额为基准）</button>
+  </div>
+  <div class="muted" data-i18n="balNote">「校准」将当前官方余额记为基准，之后按本地 token 用量实时估算，不受官方余额更新延迟影响。价格按模型估算（峰谷定价 8-17 起生效），官方账单约 3 分钟后确认，可在 config.json 的 pricing 中调整。</div>
+</section>
+
+<section>
+  <h2 style="font-size:13px;margin:0 0 6px" data-i18n="balSessionsTitle">各会话消耗（预估）</h2>
+  <div id="sessions" style="max-height:220px;overflow:auto"></div>
+  <div class="muted" data-i18n="balSessionNote">「设为当前」手动指定「当前会话消耗/本次对话消耗」统计的会话；不设置时自动跟随最近活跃会话。</div>
+</section>
+
+<script>
+  const DICT = {
+    zh: {
+      balTitle: '余额', balOfficial: '官方余额', balEstimate: '估算余额',
+      balSession: '当前会话消耗（预估）', balTurn: '本次对话消耗（预估）',
+      balRefresh: '刷新余额', balCalibrate: '校准（以当前官方余额为基准）',
+      balSessionsTitle: '各会话消耗（预估）', balSetCurrent: '设为当前', balCurrent: '当前',
+      balSessionNote: '「设为当前」手动指定「当前会话消耗/本次对话消耗」统计的会话；不设置时自动跟随最近活跃会话。',
+      balUncalibrated: '（未校准）',
+      balNote: '「校准」将当前官方余额记为基准，之后按本地 token 用量实时估算，不受官方余额更新延迟影响。当前会话消耗跟随 Web UI 中切换的会话（切换到某会话后继续对话即更新）；价格按模型估算（峰谷定价 8-17 起生效），官方账单约 3 分钟后确认，可在 config.json 的 pricing 中调整。',
+    },
+    en: {
+      balTitle: 'Balance', balOfficial: 'Official balance', balEstimate: 'Estimated balance',
+      balSession: 'Current session (est.)', balTurn: 'Last turn (est.)',
+      balRefresh: 'Refresh balance', balCalibrate: 'Calibrate (use official balance as baseline)',
+      balSessionsTitle: 'Per-session cost (est.)', balSetCurrent: 'Set as current', balCurrent: 'current',
+      balSessionNote: '「Set as current」picks the session used for the current-session / last-turn costs; when unset the most recently active session is followed automatically.',
+      balUncalibrated: '(not calibrated)',
+      balNote: '"Calibrate" records the current official balance as the baseline; afterwards the estimate is derived from local token usage in real time. The current-session cost follows the session selected in the Web UI (it updates once you keep chatting there); prices are per-model (peak/off-peak from 2026-08-17), the official bill confirms within ~3 minutes, and pricing in config.json is adjustable.',
+    },
+  };
+  let lang = 'zh';
+  let state = null;
+
+  function applyLang() {
+    const d = DICT[lang] || DICT.zh;
+    document.querySelectorAll('[data-i18n]').forEach((el) => {
+      const k = el.dataset.i18n;
+      if (d[k]) el.textContent = d[k];
+    });
+    document.title = d.balTitle;
+    document.documentElement.lang = lang === 'zh' ? 'zh-CN' : 'en';
+  }
+
+  function render() {
+    if (!state || !state.balance) return;
+    const b = state.balance;
+    const d = DICT[lang] || DICT.zh;
+    const fmt = (v) => (v == null ? '—' : '¥' + Number(v).toFixed(2));
+    document.getElementById('bal-official').textContent = fmt(b.official) + (b.error ? ` (${b.error})` : '');
+    document.getElementById('bal-estimate').textContent = fmt(b.estimated) + (b.calibrated ? '' : d.balUncalibrated);
+    document.getElementById('bal-session').textContent = fmt(b.sessionCost);
+    document.getElementById('bal-turn').textContent = fmt(b.turnCost);
+    const box = document.getElementById('sessions');
+    const rows = (b.sessions || []).map((s) => {
+      const time = s.mtimeMs ? new Date(s.mtimeMs).toLocaleString('zh-CN', { hour12: false }) : '';
+      const isCur = s.id === b.currentId;
+      return '<div class="row">'
+        + '<span class="label" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:170px" title="' + (s.title || s.id) + '">' + (s.title || s.id.slice(0, 8)) + '</span>'
+        + '<span class="muted">' + time + '</span>'
+        + '<span class="val">' + fmt(s.cost) + '</span>'
+        + (isCur
+            ? '<span class="status-ok">' + d.balCurrent + '</span>'
+            : '<button data-sid="' + s.id + '" class="set-cur">' + d.balSetCurrent + '</button>')
+        + '</div>';
+    }).join('');
+    box.innerHTML = rows;
+    box.querySelectorAll('.set-cur').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        await window.desktop.setCurrentSession(btn.dataset.sid);
+        await refresh();
+      });
+    });
+  }
+
+  async function refresh() {
+    state = await window.desktop.getState();
+    render();
+  }
+
+  window.desktop.onLanguageChanged((l) => { lang = l; applyLang(); render(); });
+  document.getElementById('btn-close').addEventListener('click', () => window.desktop.closeSettings());
+  document.getElementById('btn-refresh').addEventListener('click', async () => {
+    const btn = document.getElementById('btn-refresh');
+    const d = DICT[lang] || DICT.zh;
+    btn.disabled = true;
+    btn.textContent = '…';
+    try {
+      await window.desktop.refreshBalance();
+    } finally {
+      btn.disabled = false;
+      btn.textContent = d.balRefresh;
+    }
+    await refresh();
+  });
+  document.getElementById('btn-calibrate').addEventListener('click', async () => {
+    await window.desktop.calibrateBalance();
+    await refresh();
+  });
+
+  (async () => {
+    state = await window.desktop.getState();
+    lang = state.language || 'zh';
+    applyLang();
+    render();
+    // Follow the 10s balance refresh while the page is open.
+    setInterval(refresh, 10000);
+  })();
+</script>
+</body>
+</html>
