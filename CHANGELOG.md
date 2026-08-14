@@ -88,7 +88,7 @@
 
 ## 0.1.23
 - 余额数据改用 dsh web 服务端权威 API（`POST /api/session.list`）：tokenUsage/updatedAt/running 由 dsh 统计，「当前会话」自动跟随 Web UI 中切换的会话（updatedAt 更新），数值口径统一
-- API key 一致性校验：服务端会话必须都能在本地 ~/.dsh/sessions 找到，否则视为其他 DSH_HOME 的实例（如 ~/.dsh-cc 的  key）→ 自动降级本地扫描，杜绝多 key 用量混算
+- API key 一致性校验：服务端会话必须都能在本地 ~/.dsh/sessions 找到，否则视为其他 DSH_HOME 的实例（其他 API key 的 DSH_HOME）→ 自动降级本地扫描，杜绝多 key 用量混算
 - 余额详情页新增「各会话消耗」列表 + 「设为当前」：手动指定当前会话/本次对话统计对象（config.balanceSessionId）；不设置时自动跟随最近活跃
 
 ## 0.1.24

@@ -804,7 +804,7 @@ async function doRefresh() {
   // Server session list (2.5s cap).
   const serverRaw = await serverP;
   // Key-consistency guard: the dsh web instance must belong to the same
-  // DSH_HOME as our local scan (~/.dsh, key ). If the server reports
+  // DSH_HOME as our local scan (the local DSH_HOME key). If the server reports
   // sessions that do not exist locally, it is another instance (e.g. the
   // ~/.dsh-cc home with a different API key) — fall back to the local scan
   // so we never mix another key's consumption into this key's balance.
