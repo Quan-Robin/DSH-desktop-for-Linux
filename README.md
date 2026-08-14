@@ -2,8 +2,12 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
+[**English**](README.en.md) | 中文
+
 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（dsh）的桌面壳应用：用 Electron 窗口内嵌 dsh 的 Web UI，自动管理 dsh 服务进程，并提供系统托盘。
 
+> 本项目完全由 DeepSeek 系列模型创建并维护。
+>
 > 这是社区非官方桌面端（第三方项目，与 DeepSeek 官方无关）。
 
 ## 功能
@@ -34,8 +38,8 @@ npm run dist
 
 产物在 `dist/`：
 
-- **deb**（推荐）：`sudo dpkg -i dist/deepseek-harness-desktop_0.1.8_amd64.deb`，安装到 `/opt/DeepSeek Harness/`，应用菜单出现 **DeepSeek Harness** 入口（图标为你提供的图片）。postinst 会自动配置 chrome-sandbox 权限（支持 user namespaces 的现代内核用 0755，否则 SUID 4755），安装后即可全沙箱运行。
-- **AppImage**：`chmod +x "dist/DeepSeek Harness-0.1.8.AppImage"` 后直接运行，无需安装。
+- **deb**（推荐）：`sudo dpkg -i dist/deepseek-harness-desktop_0.1.11_amd64.deb`，安装到 `/opt/DeepSeek Harness/`，应用菜单出现 **DeepSeek Harness** 入口（图标为你提供的图片）。postinst 会自动配置 chrome-sandbox 权限（支持 user namespaces 的现代内核用 0755，否则 SUID 4755），安装后即可全沙箱运行。
+- **AppImage**：`chmod +x "dist/DeepSeek Harness-0.1.11.AppImage"` 后直接运行，无需安装。
 
 两种方式启动后行为一致：自动复用/启动 dsh 服务、托盘、窗口图标均为你的图片。
 
@@ -78,7 +82,7 @@ dsh 通过 npm 发布，桌面端在启动时自动检测（也可在设置中�
 {
   "port": 3080,
   "dshCommand": "npx",
-  "closeToTray": true,
+  "onClose": "ask",
   "language": "zh"
 }
 ```

@@ -1,0 +1,44 @@
+name: build
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build deb & AppImage
+        run: npm run dist
+
+      - name: Create GitHub Release
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            "dist/deepseek-harness-desktop_${GITHUB_REF_NAME#v}_amd64.deb" \
+            "dist/DeepSeek Harness-${GITHUB_REF_NAME#v}.AppImage" \
+            "dist/latest-linux.yml" \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: |
+            dist/*.deb
+            dist/*.AppImage
+            dist/latest-linux.yml
+          if-no-files-found: error
