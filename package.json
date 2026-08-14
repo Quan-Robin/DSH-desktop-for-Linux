@@ -1,0 +1,57 @@
+{
+  "name": "deepseek-harness-desktop",
+  "version": "0.1.11",
+  "description": "Desktop shell for DeepSeek Harness (dsh) — embeds the dsh Web UI in an Electron window with tray and process management",
+  "main": "src/main.js",
+  "license": "MIT",
+  "author": "Quan-Robin",
+  "homepage": "https://github.com/Quan-Robin/DSH-desktop-for-Linux",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Quan-Robin/DSH-desktop-for-Linux.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Quan-Robin/DSH-desktop-for-Linux/issues"
+  },
+  "desktopName": "deepseek-harness.desktop",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --linux"
+  },
+  "build": {
+    "appId": "com.quanrobin.dsh-desktop",
+    "productName": "DeepSeek Harness",
+    "files": [
+      "src/**/*",
+      "assets/**/*",
+      "package.json"
+    ],
+    "directories": {
+      "output": "dist"
+    },
+    "publish": [
+      {
+        "provider": "generic",
+        "url": "https://example.invalid/dsh-desktop"
+      }
+    ],
+    "linux": {
+      "target": [
+        "deb",
+        "AppImage"
+      ],
+      "icon": "assets/icon.png",
+      "category": "Development",
+      "maintainer": "Quan-Robin <Quan-Robin@users.noreply.github.com>",
+      "syncDesktopName": true
+    }
+  },
+  "devDependencies": {
+    "electron": "^43.4.0",
+    "electron-builder": "^26.0.12"
+  },
+  "dependencies": {
+    "dbus-next": "^0.10.2",
+    "electron-updater": "^6.8.9"
+  }
+}
