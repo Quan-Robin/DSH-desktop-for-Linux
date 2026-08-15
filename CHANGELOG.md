@@ -117,3 +117,8 @@
 
 ## 0.1.31
 - 修复托盘图标堆积：每次余额刷新曾销毁并重建 SNI 服务（GNOME 每次叠一个新托盘图标）；改为 dbusmenu 内容热更新（setMenu + LayoutUpdated 信号），图标唯一、菜单实时
+
+## 0.1.32
+- 修复 dsh 服务意外退出（code=1 MISSING_DSH_HOME）：spawn dsh 时显式设置 DSH_HOME（与本地扫描一致），新版 dsh 不再报错退出
+- 代码审查修复（4 项）：worker 30s 超时降级（防 refreshBalance 永久卡死）；computeUsage 并发互斥（定时刷新与校准不交叉）；SNI 热更新失败时先销毁旧服务再重建；createTray 防重复创建（异步注册竞态）
+- 托盘余额菜单精简：只显示官方余额（详情/各会话/刷新/校准入口移除，详情页代码保留）

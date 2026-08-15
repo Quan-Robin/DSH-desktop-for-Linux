@@ -237,20 +237,45 @@ function parseFilesInWorker(files) {
     if (!files.length) return resolve([]);
     const w = getBalanceWorker();
     if (!w) return resolve(files.map((f) => ({ file: f, data: parseUsageFile(f) })));
-    const onMsg = (results) => { w.removeListener('message', onMsg); resolve(results); };
-    const onErr = () => {
+    let settled = false;
+    const finish = (fn) => (v) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      fn(v);
+    };
+    const onMsg = finish((results) => {
+      w.removeListener('message', onMsg);
+      w.removeListener('error', onErr);
+      resolve(results);
+    });
+    const onErr = finish(() => {
       w.removeListener('message', onMsg);
       balanceWorker = null;
       try { w.terminate(); } catch { /* ignore */ }
       resolve(files.map((f) => ({ file: f, data: parseUsageFile(f) })));
-    };
+    });
+    // Worker hang guard: if the worker does not answer within 30s, fall back
+    // to the inline parse so refreshBalance never gets stuck (which would
+    // permanently disable the re-entrancy guard and the balance menu).
+    const timer = setTimeout(onErr, 30000);
     w.once('message', onMsg);
     w.once('error', onErr);
     w.postMessage(files);
   });
 }
 
+// computeUsage is called from both the periodic refresh and calibrateBalance;
+// serialize concurrent calls so their worker batches never cross (shared
+// worker + shared cache), reusing the in-flight scan.
+let usageInflight = null;
 async function computeUsage(cache) {
+  if (usageInflight) return usageInflight;
+  usageInflight = computeUsageInner(cache).finally(() => { usageInflight = null; });
+  return usageInflight;
+}
+
+async function computeUsageInner(cache) {
   const files = findSessionFiles();
   const changed = [];
   for (const f of files) {

@@ -129,6 +129,7 @@ let config = null;
 let win = null;
 let tray = null;
 let sniTray = null;
+let sniCreating = false; // guard: createSniTray registers asynchronously
 let dshProc = null;
 let quitting = false;
 let cleaningUp = false;
@@ -207,6 +208,9 @@ function startDsh() {
 
   const proc = spawn(bin, args, {
     cwd: os.homedir(),
+    // dsh requires an explicit DSH_HOME (newer builds fail with
+    // MISSING_DSH_HOME otherwise); keep it consistent with the local scan.
+    env: { ...process.env, DSH_HOME: balanceApi.DSH_HOME },
     stdio: ['ignore', 'pipe', 'pipe'],
     // Own process group so stopDsh can kill the whole tree (npx -> sh -> node dsh).
     detached: process.platform !== 'win32',
@@ -902,29 +906,10 @@ async function calibrateBalance() {
 
 function balanceMenuItems() {
   const fmt = (v) => (v == null ? '—' : `¥${Number(v).toFixed(2)}`);
-  const sessionsSub = (balanceState.sessions || []).slice(0, 10).map((s) => {
-    const isCur = s.id === balanceState.currentId;
-    const title = s.title ? s.title.slice(0, 24) : (s.id || '').slice(0, 8);
-    return {
-      label: `${isCur ? '✓ ' : ''}${title} — ${fmt(s.cost)}`,
-      type: 'checkbox',
-      checked: isCur,
-      click: () => {
-        config.balanceSessionId = s.id;
-        saveConfig();
-        refreshBalance();
-      },
-    };
-  });
   return [
+    // The tray shows just the official balance; the details page holds the
+    // full view (estimate, current session, last turn, per-session list).
     { label: `${t('balOfficial')}: ${fmt(balanceState.official)}`, enabled: false },
-    { label: `${t('balEstimate')}: ${fmt(balanceState.estimated)}${balanceState.calibrated ? '' : ` ${t('balUncalibrated')}`}`, enabled: false },
-    { label: `${t('balSession')}: ${fmt(balanceState.sessionCost)} | ${t('balTurn')}: ${fmt(balanceState.turnCost)}`, enabled: false },
-    { type: 'separator' },
-    { label: t('balSessionsTitle'), submenu: sessionsSub.length ? sessionsSub : [{ label: t('balNoSessions'), enabled: false }] },
-    { label: t('balDetail'), click: () => openBalance() },
-    { label: t('balRefresh'), click: () => refreshBalance() },
-    { label: t('balCalibrate'), click: () => calibrateBalance() },
   ];
 }
 
@@ -973,8 +958,14 @@ function applyMenus() {
     if (sniTray && sniTray.setMenu) {
       // Hot-update the SNI menu in place — re-creating the service on every
       // balance refresh made GNOME stack a new tray icon each time.
-      try { sniTray.setMenu(trayMenuItems()); } catch { /* fall through to recreate */ }
-      return;
+      try {
+        sniTray.setMenu(trayMenuItems());
+        return;
+      } catch {
+        // Hot-update failed — tear the old service down before recreating.
+        try { if (sniTray && sniTray.destroy) sniTray.destroy(); } catch { /* ignore */ }
+        sniTray = null;
+      }
     }
     createTray();
   } else if (tray) {
@@ -1016,6 +1007,11 @@ function createTray() {
   if (process.platform === 'linux' && process.env.WAYLAND_DISPLAY) {
     // Wayland: Electron's Tray SNI is broken (fake IconName, unreadable
     // IconPixmap) — use our own StatusNotifierItem instead.
+    // createSniTray registers asynchronously (a few seconds of watcher
+    // probing); guard against duplicate registration when applyMenus runs
+    // before the first creation settles.
+    if (sniCreating) return;
+    sniCreating = true;
     createSniTray({
       iconPath: TRAY_ICON_PATH,
       title: 'DeepSeek Harness',
@@ -1029,6 +1025,8 @@ function createTray() {
       tray.setToolTip('DeepSeek Harness');
       tray.setContextMenu(Menu.buildFromTemplate(trayMenuTemplate()));
       tray.on('click', toggleWindow);
+    }).finally(() => {
+      sniCreating = false;
     });
     return;
   }
