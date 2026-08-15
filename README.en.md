@@ -89,12 +89,43 @@ The config file lives in the user-data directory (Linux: `~/.config/deepseek-har
 | Field | Default | Description |
 |---|---|---|
 | `port` | `3080` | dsh service port |
-| `dshCommand` | `"npx"` | How to start dsh: `"npx"` (official, auto-downloads); `"global"` (uses `dsh` on PATH); or an absolute path to an executable |
+| `dshCommand` | `"npx"` | How to start dsh: `"npx"` (official, auto-downloads); `"global"` (uses `dsh` on PATH); `"bundled"` (portable build, runs the bundled node + dsh — see “Linux portable build” below); or an absolute path to an executable |
+| `dshHome` | `""` | dsh data directory (sessions/credentials/profile). Empty = `~/.dsh`; **portable build: empty = `data/` next to the app** — fully isolated |
 | `closeBehavior` | `""` | What happens when the window is closed: `""` (unset — asked once on first close, then remembered); `"tray"` (hide to the tray, dsh keeps running); `"quit"` (fully quit and stop dsh); `"ask"` (ask every time). Changeable in the Settings panel |
 | `updateUrl` | `""` | Auto-update feed (AppImage only): a generic HTTP(S) server or GitHub Releases URL. Empty = auto-update disabled |
 | `sourceDir` | `""` | Local source directory: enables "Build & Install" in the tray menu, which packages a deb locally and installs it with system authorization (empty = feature hidden) |
 | `stopExternalDsh` | `true` | On full quit, also stop an externally-started `dsh web` listening on the port (only kills processes whose command line matches `dsh web`; never touches other services; unaffected in tray/background mode) |
 | `language` | `"zh"` | UI language: `"zh"` (Chinese) or `"en"` (English). Switchable in Settings, applies immediately |
+
+## Linux portable build
+
+A self-contained version that needs no system Node/pnpm/dsh:
+
+```bash
+npm run bundle          # download node + pnpm + dsh (fixed versions) into bundled/
+npm run dist:portable   # build the folder + zip (dist-portable/DeepSeek-Harness-x64.zip)
+```
+
+The result is an **unzip-and-run folder** (Antigravity-x64 style):
+
+```
+DeepSeek-Harness-x64/
+├── deepseek-harness          # launcher (entry point; handles sandbox, detaches from terminal)
+├── deepseek-harness-desktop   # actual executable
+├── 运行"deepseek-harness"文件  # empty hint file
+└── resources/
+    ├── app.asar
+    └── bundled/               # bundled node + pnpm + dsh runtime
+```
+
+Run: `./DeepSeek-Harness-x64/deepseek-harness` (double-click or execute; adds `--no-sandbox` automatically when the SUID sandbox is unusable; runs detached from the terminal so closing it does not kill the app).
+
+**Out of the box**: no configuration needed — the bundled runtime is auto-detected; data lives in `data/` next to the app by default (never touches `~/.dsh`); if the configured port is taken by an external service the app picks a free port instead (never shows the host's own sessions).
+
+**Per-instance config isolation**: all portable app data (config, balance state, logs, caches) lives in `data/app/` next to the app — settings such as close behaviour are never shared between a normal install and a portable copy, or between multiple portable copies; they can run side by side (each with its own window, dsh service and data).
+
+- The bundled dsh version is fixed (`scripts/download-bundled.sh` can change it); updating = re-run `npm run bundle` + `dist:portable`
+- The bundled dsh's known plugin bug (dsh-plugin-vetting regex) is auto-patched in bundled mode
 
 ## Development notes
 
