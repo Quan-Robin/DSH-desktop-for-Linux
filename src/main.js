@@ -906,16 +906,44 @@ async function calibrateBalance() {
 
 function balanceMenuItems() {
   const fmt = (v) => (v == null ? '—' : `¥${Number(v).toFixed(2)}`);
+  const sessionsSub = (balanceState.sessions || []).slice(0, 10).map((s) => {
+    const isCur = s.id === balanceState.currentId;
+    const title = s.title ? s.title.slice(0, 24) : (s.id || '').slice(0, 8);
+    return {
+      label: `${isCur ? '✓ ' : ''}${title} — ${fmt(s.cost)}`,
+      type: 'checkbox',
+      checked: isCur,
+      click: () => {
+        config.balanceSessionId = s.id;
+        saveConfig();
+        refreshBalance();
+      },
+    };
+  });
   return [
-    // The tray shows just the official balance; the details page holds the
-    // full view (estimate, current session, last turn, per-session list).
+    { label: `${t('balOfficial')}: ${fmt(balanceState.official)}`, enabled: false },
+    { label: `${t('balEstimate')}: ${fmt(balanceState.estimated)}${balanceState.calibrated ? '' : ` ${t('balUncalibrated')}`}`, enabled: false },
+    { label: `${t('balSession')}: ${fmt(balanceState.sessionCost)} | ${t('balTurn')}: ${fmt(balanceState.turnCost)}`, enabled: false },
+    { type: 'separator' },
+    { label: t('balSessionsTitle'), submenu: sessionsSub.length ? sessionsSub : [{ label: t('balNoSessions'), enabled: false }] },
+    { label: t('balDetail'), click: () => openBalance() },
+    { label: t('balRefresh'), click: () => refreshBalance() },
+    { label: t('balCalibrate'), click: () => calibrateBalance() },
+  ];
+}
+
+// Tray variant: the tray shows only the official balance (the full balance
+// menu lives in the application menubar).
+function trayBalanceItems() {
+  const fmt = (v) => (v == null ? '—' : `¥${Number(v).toFixed(2)}`);
+  return [
     { label: `${t('balOfficial')}: ${fmt(balanceState.official)}`, enabled: false },
   ];
 }
 
 function trayMenuTemplate() {
   return [
-    ...balanceMenuItems(),
+    ...trayBalanceItems(),
     { type: 'separator' },
     { label: t('trayShow'), click: () => toggleWindow() },
     { label: t('trayBrowser'), click: () => shell.openExternal(appUrl()) },
@@ -989,7 +1017,7 @@ function sniMenuItems(items) {
 // Shared tray menu (SNI and Electron-Tray fallback).
 function trayMenuItems() {
   return [
-    ...sniMenuItems(balanceMenuItems()),
+    ...sniMenuItems(trayBalanceItems()),
     { separator: true },
     { label: t('trayShow'), action: () => toggleWindow() },
     { label: t('trayBrowser'), action: () => shell.openExternal(appUrl()) },
