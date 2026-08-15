@@ -2,6 +2,21 @@
 
 本项目的版本更新说明。发布 GitHub Release 时同步引用本文件对应条目。
 
+## 0.1.35 (2026-08-15)
+
+- **新增：Linux 便携版**（`npm run dist:portable`）——捆绑 node + pnpm + dsh 运行时，**开箱即用**（无需系统安装 Node/pnpm/dsh）
+  - 数据完全隔离：`config.dshHome` 可配置（便携版指向应用旁 `data/` 或任意目录），不污染 `~/.dsh`
+  - 启动模式：`dshCommand: "bundled"`（内置 node 运行内置 dsh；`PATH` 自动注入内置 bin）
+  - 内置 dsh 固定版本（当前 0.1.0-rc.6），无 npm 侧更新提示（更新 = 重新下载便携版）
+  - 构建脚本 `scripts/download-bundled.sh`（可换 node/pnpm/dsh 版本）；产物 `dist-portable/DeepSeek-Harness-x64.zip`（解压即用目录，含可执行 `deepseek-harness-desktop` + resources/bundled）
+  - 内置 dsh 的已知插件 bug（dsh-plugin-vetting 正则）在 bundled 模式启动时自动修复
+- **设置面板新增「应用版本」**：显示桌面端自身版本（如 v0.1.35）；`dshCommand: "bundled"` 时「当前版本」显示内置 dsh 版本
+- **配置按实例隔离**：便携版应用数据全部独立于应用旁 `data/app/`（关闭行为等设置不与普通版/其他便携副本共用；多实例可同时运行、各自独立窗口与数据）
+- **普通版自动降级**：显式 `dshCommand: "bundled"` 但本机无内置运行时（如普通版 config 遗留）→ 自动回退 npx 并提示
+- **便携版开箱即用**：无需任何配置（无 `dshCommand` 时自动检测内置运行时并启用 bundled 模式；配置端口被外部服务占用时自动顺延，绝不显示宿主机自己的 `~/.dsh` 会话）
+- **便携版入口改为启动器** `./deepseek-harness`（zip 解压会丢失 chrome-sandbox 的 SUID 权限导致直接运行报 FATAL，启动器自动检测并加 `--no-sandbox`）
+- **普通版体积不变**（`npm run dist` 不含捆绑运行时）
+
 ## 0.1.13 (2026-08-14)
 
 - **修复**：0.1.12 的检查更新修复不彻底——`bash -lc` 依赖 `~/.profile` 的 PATH 配置，而你的 npm 全局目录（`~/.npm-global/bin`）配置在别处，纯净 GUI 环境下仍然找不到 `dsh`。现改为**直接探测常见安装位置**（`~/.npm-global/bin`、`~/.local/bin`、`/usr/bin`）并用**绝对路径执行**，完全不依赖 shell 配置
@@ -125,3 +140,7 @@
 
 ## 0.1.33
 - 修正 0.1.32 的托盘精简范围：托盘菜单余额只显示官方余额；应用菜单栏的「余额」菜单恢复完整（官方/估算/当前会话/本次对话/各会话/详情/刷新/校准）
+
+## 0.1.34
+- 插件失败自动修复：dsh 因插件加载失败退出（code≠0）时，解析 dsh.log 定位失败插件（错误链取最内层），弹窗询问「禁用该插件并重启」；确认后向 ~/.dsh/profiles/web/cordis.patch.yml 写入 `- id: <plugin>\n  disabled: true` 并自动重启；同一插件禁用后仍失败则停止自动处理（防循环）
+- 修复过程实测：plugin-vetting 正则 bug 场景下自动禁用成功、服务恢复 200

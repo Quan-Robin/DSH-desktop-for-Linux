@@ -13,6 +13,20 @@ const { autoUpdater } = require('electron-updater');
 const { spawn, execFile } = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');
+
+// Portable build: keep ALL app data (config, balance state, logs, caches)
+// next to the app under data/app/ so a portable instance and a normal install
+// (or two portable copies) never share settings — e.g. closing behaviour is
+// configured per instance, not globally. Set early (before loadConfig).
+function isolatePortableUserData() {
+  try {
+    if (!app.isPackaged) return false;
+    const root = process.resourcesPath ? path.join(process.resourcesPath, 'bundled') : '';
+    if (!root || !fs.existsSync(path.join(root, 'node', 'bin', 'node'))) return false;
+    app.setPath('userData', path.join(path.dirname(process.execPath), 'data', 'app'));
+    return true;
+  } catch { return false; }
+}
 const path = require('node:path');
 
 const DEFAULT_PORT = 3080;
@@ -54,6 +68,10 @@ const I18N = {
     balSession: '当前会话消耗（预估）', balTurn: '本次对话消耗（预估）', balDetail: '余额详情…',
     balSessionsTitle: '各会话消耗（预估）', balSessionId: '会话', balSessionTime: '时间', balSessionCost: '消耗', balNoSessions: '（暂无会话记录）',
     balNote: '「校准」将当前官方余额记为基准，之后按本地 token 用量实时估算，不受官方余额更新延迟影响。当前会话消耗按模型价格估算（峰谷定价 8-17 起生效），官方账单约 3 分钟后确认；价格可在 config.json 的 pricing 中调整。',
+    pluginFailMsg: 'dsh 插件 {id} 加载失败导致启动失败。是否在下次启动时禁用该插件？\n（禁用后该插件功能不可用；恢复方法：删除 ~/.dsh/profiles/web/cordis.patch.yml 中对应条目）',
+    pluginDisableRestart: '禁用并重启', pluginSkip: '暂不处理',
+    pluginDisabledTitle: '插件已禁用', pluginDisabledBody: '插件 {id} 已禁用，正在重启服务…',
+    bundledMissingTitle: '便携运行时缺失', bundledMissingBody: '未找到内置运行时（bundled），已自动回退到 npx 模式启动 dsh。',
   },
   en: {
     file: 'File', settings: 'Settings…', checkUpdate: 'Check for Updates', buildInstall: 'Build & Install',
@@ -89,6 +107,10 @@ const I18N = {
     balSession: 'Current session (est.)', balTurn: 'Last turn (est.)', balDetail: 'Balance details…',
     balSessionsTitle: 'Per-session cost (est.)', balSessionId: 'Session', balSessionTime: 'Time', balSessionCost: 'Cost', balNoSessions: '(no session records)',
     balNote: '"Calibrate" records the current official balance as the baseline; afterwards the estimate is derived from local token usage in real time, unaffected by official balance lag. Session/turn costs use per-model pricing (peak/off-peak from 2026-08-17); the official bill confirms within ~3 minutes. Prices are adjustable via pricing in config.json.',
+    pluginFailMsg: 'dsh plugin {id} failed to load, which made dsh exit on startup. Disable this plugin on the next start?\n(The plugin will be unavailable; to re-enable, remove the matching entry from ~/.dsh/profiles/web/cordis.patch.yml)',
+    pluginDisableRestart: 'Disable & restart', pluginSkip: 'Not now',
+    pluginDisabledTitle: 'Plugin disabled', pluginDisabledBody: 'Plugin {id} disabled — restarting the service…',
+    bundledMissingTitle: 'Portable runtime missing', bundledMissingBody: 'No bundled runtime found — fell back to npx mode to start dsh.',
   },
 };
 
@@ -105,7 +127,7 @@ const TRAY_ICON_PATH = path.join(__dirname, '..', 'assets', 'icon-tray.png');
 const DEFAULTS = {
   port: DEFAULT_PORT,
   // How to start dsh: 'npx' (official route, auto-downloads) | 'global' (dsh on PATH) | absolute path to a binary.
-  dshCommand: 'npx',
+  dshCommand: '',
   // What closing the window does: '' (unset — ask once on first close) | 'tray' | 'quit' | 'ask'.
   closeBehavior: '',
   // Legacy alias of closeBehavior (pre-0.1.12), migrated on load.
@@ -123,6 +145,9 @@ const DEFAULTS = {
   // Manual "current session" override (full session id) picked in the balance
   // details page; empty = follow the server's last-active session.
   balanceSessionId: '',
+  // dsh data home; empty = ~/.dsh. Portable mode points this next to the app
+  // (config.dshCommand 'bundled' ships its own node/dsh/pnpm).
+  dshHome: '',
 };
 
 let config = null;
@@ -196,21 +221,139 @@ function logDshLine(buf) {
   } catch { /* log is best-effort */ }
 }
 
-function startDsh() {
-  const args = config.dshCommand === 'npx'
-    ? ['-y', DSH_PACKAGE, 'web', '--port', String(config.port)]
-    : ['web', '--port', String(config.port)];
+// dsh plugin-failure recovery: when dsh exits because a plugin failed to
+// load (e.g. an upstream regex bug), offer to disable that plugin for the
+// next start by appending `- disable: <id>` to the web profile patch.
+const PLUGIN_FAIL_RE = /failed to (?:import|apply) loader entry\s+([A-Za-z0-9_.-]+)\s*\(([^)]+)\)/g;
 
-  let bin = config.dshCommand === 'npx' ? 'npx' : config.dshCommand === 'global' ? 'dsh' : config.dshCommand;
-  if (process.platform === 'win32' && !bin.endsWith('.exe') && !path.isAbsolute(bin) && !bin.includes('/') && !bin.includes('\\')) {
-    bin += '.cmd';
+// Portable ("bundled") runtime: node + dsh + pnpm shipped under resources/
+// (or ./bundled in development).
+function bundledRuntimePresent() {
+  try {
+    const b = bundledPaths();
+    return fs.existsSync(path.join(b.base, 'node', 'bin', 'node')) &&
+      fs.existsSync(path.join(b.base, 'dsh', 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js'));
+  } catch { return false; }
+}
+
+function bundledPaths() {
+  const candidates = [process.resourcesPath, path.join(__dirname, '..')].filter(Boolean);
+  for (const root of candidates) {
+    const base = path.join(root, 'bundled');
+    if (fs.existsSync(path.join(base, 'node', 'bin', 'node'))) {
+      return {
+        base,
+        node: path.join(base, 'node', 'bin', 'node'),
+        dsh: path.join(base, 'dsh', 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js'),
+        pnpm: path.join(base, 'pnpm', 'pnpm'),
+      };
+    }
+  }
+  const root = candidates[0] || path.join(__dirname, '..');
+  const base = path.join(root, 'bundled');
+  return {
+    base,
+    node: path.join(base, 'node', 'bin', 'node'),
+    dsh: path.join(base, 'dsh', 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js'),
+    pnpm: path.join(base, 'pnpm', 'pnpm'),
+  };
+}
+
+// Known upstream bug in dsh-plugin-vetting (0.4.0): the FLAG_PATTERN regex
+// has an unescaped `/proc` slash which is a SyntaxError under Node. The
+// bundled dsh bootstraps this plugin into its own profile on first start;
+// patch it proactively so portable mode works out of the box.
+function ensureVettingPatched() {
+  const file = path.join(balanceApi.getDshHome(), 'profiles', 'web', 'node_modules', 'dsh-plugin-vetting', 'lib', 'index.js');
+  try {
+    let s = fs.readFileSync(file, 'utf8');
+    const broken = 'http:\\/\\/\\d{1,3}\\.|/proc\\/\\d+\\/environ';
+    const fixed = 'http:\\/\\/\\d{1,3}\\.|\\/proc\\/\\d+\\/environ';
+    if (s.includes(broken)) {
+      s = s.replace(broken, fixed);
+      fs.writeFileSync(file, s);
+    }
+  } catch { /* file not there yet (profile not bootstrapped) — first start handles it */ }
+}
+
+function detectFailedPlugin(logText) {
+  // Error chains nest ("failed to apply loader entry include (...): failed
+  // to import loader entry plugin-vet (...)") — the innermost (last) match is
+  // the plugin that actually failed to load.
+  const matches = [...(logText || '').matchAll(PLUGIN_FAIL_RE)];
+  const m = matches[matches.length - 1];
+  return m ? { id: m[1], pkg: m[2] } : null;
+}
+
+function readDshLogTail() {
+  try {
+    const file = path.join(app.getPath('userData'), 'dsh.log');
+    const st = fs.statSync(file);
+    const size = Math.min(st.size, 16384);
+    const buf = Buffer.alloc(size);
+    const fd = fs.openSync(file, 'r');
+    fs.readSync(fd, buf, 0, size, st.size - size);
+    fs.closeSync(fd);
+    return buf.toString('utf8');
+  } catch { return ''; }
+}
+
+// Append `- disable: <id>` to the dsh web profile patch (cordis.patch.yml).
+// Returns true on success or when already disabled.
+function disableDshPlugin(pluginId, patchFile) {
+  const file = patchFile || path.join(balanceApi.getDshHome(), 'profiles', 'web', 'cordis.patch.yml');
+  try {
+    // PatchOptions requires an id for non-insert patches ("id is required
+    // for non-insert patches"), and disabled is a boolean.
+    const entry = `- id: ${pluginId}\n  disabled: true`;
+    let text = fs.readFileSync(file, 'utf8');
+    if (text.includes(`id: ${pluginId}`)) return true;
+    // Replace a bare `[]` (possibly after comment lines) with the entry;
+    // otherwise append to the existing block list. Never leave `[]` followed
+    // by block entries — that is invalid YAML and dsh refuses to start.
+    if (/^\[\]\s*$/m.test(text)) {
+      text = text.replace(/^\[\]\s*$/m, entry);
+    } else {
+      text = text.replace(/\s*$/, '\n') + entry + '\n';
+    }
+    fs.writeFileSync(file, text);
+    return true;
+  } catch (e) {
+    console.error('[dsh] failed to disable plugin:', e.message);
+    return false;
+  }
+}
+
+function startDsh() {
+  const isBundled = config.dshCommand === 'bundled';
+  let args;
+  let bin;
+  let env = { ...process.env, DSH_HOME: balanceApi.getDshHome() };
+  if (isBundled) {
+    // Portable mode: run the bundled dsh with the bundled node; put the
+    // bundled node/pnpm bins on PATH so dsh's profile bootstrap can spawn
+    // npm/pnpm itself.
+    const b = bundledPaths();
+    bin = b.node;
+    args = [b.dsh, 'web', '--port', String(config.port)];
+    const binDirs = [path.dirname(b.node), path.dirname(b.pnpm), process.env.PATH].filter(Boolean);
+    env.PATH = binDirs.join(path.delimiter);
+    ensureVettingPatched();
+  } else {
+    args = config.dshCommand === 'npx'
+      ? ['-y', DSH_PACKAGE, 'web', '--port', String(config.port)]
+      : ['web', '--port', String(config.port)];
+    bin = config.dshCommand === 'npx' ? 'npx' : config.dshCommand === 'global' ? 'dsh' : config.dshCommand;
+    if (process.platform === 'win32' && !bin.endsWith('.exe') && !path.isAbsolute(bin) && !bin.includes('/') && !bin.includes('\\')) {
+      bin += '.cmd';
+    }
   }
 
   const proc = spawn(bin, args, {
     cwd: os.homedir(),
     // dsh requires an explicit DSH_HOME (newer builds fail with
     // MISSING_DSH_HOME otherwise); keep it consistent with the local scan.
-    env: { ...process.env, DSH_HOME: balanceApi.DSH_HOME },
+    env,
     stdio: ['ignore', 'pipe', 'pipe'],
     // Own process group so stopDsh can kill the whole tree (npx -> sh -> node dsh).
     detached: process.platform !== 'win32',
@@ -222,10 +365,47 @@ function startDsh() {
     dshProc = null;
     if (!quitting) showFatal(`无法启动 dsh 进程：${err.message}`);
   });
+  let pluginPromptOpen = false; // guard: never stack plugin prompts
+  let recentlyDisabledPlugin = null; // loop guard: re-failing after disable → stop
   proc.on('exit', (code, signal) => {
     const unexpected = dshProc === proc;
     dshProc = null;
     if (unexpected && !quitting) {
+      // Plugin-failure recovery: offer to disable the failing plugin.
+      if (!pluginPromptOpen && code !== 0) {
+        const plugin = detectFailedPlugin(readDshLogTail());
+        if (plugin && plugin.id !== recentlyDisabledPlugin) {
+          // Portable mode: auto-patch the known dsh-plugin-vetting upstream
+          // regex bug instead of prompting (the plugin file exists after the
+          // first bootstrap run).
+          if (config.dshCommand === 'bundled' && plugin.id === 'plugin-vet') {
+            ensureVettingPatched();
+            setTimeout(boot, 1500);
+            return;
+          }
+          pluginPromptOpen = true;
+          try {
+            const opts = {
+                type: 'warning',
+                buttons: [t('pluginDisableRestart'), t('pluginSkip')],
+                defaultId: 0,
+                cancelId: 1,
+                noLink: true,
+                message: t('pluginFailMsg', { id: plugin.id }),
+              };
+              const w = win && !win.isDestroyed() ? win : undefined;
+              const disable = (w ? dialog.showMessageBoxSync(w, opts) : dialog.showMessageBoxSync(opts)) === 0;
+              if (disable && disableDshPlugin(plugin.id)) {
+              recentlyDisabledPlugin = plugin.id;
+              notify(t('pluginDisabledTitle'), t('pluginDisabledBody', { id: plugin.id }));
+              setTimeout(boot, 1500);
+              return; // restarting with the plugin disabled — no fatal page
+            }
+          } finally {
+            pluginPromptOpen = false;
+          }
+        }
+      }
       showFatal(`dsh 服务意外退出（code=${code} signal=${signal}）。日志见 ${path.join(app.getPath('userData'), 'dsh.log')}`);
     }
   });
@@ -462,8 +642,19 @@ async function boot() {
   if (!win) createWindow();
   win.loadURL(loadingPage());
 
+  // Portable mode: never reuse an external dsh server on the configured port
+  // (that would show the host's own ~/.dsh sessions). Pick a free port
+  // instead, so the bundled runtime serves its own data directory.
+  if (config.dshCommand === 'bundled') {
+    for (let i = 0; i < 10 && await isServerUp(config.port); i++) {
+      console.log(`[boot] port ${config.port} busy, trying ${config.port + 1}`);
+      config.port += 1;
+    }
+  }
+
   if (await isServerUp(config.port)) {
     // A dsh server is already running on this port — reuse it.
+    console.log(`[boot] reusing existing dsh on ${config.port}`);
     win.loadURL(appUrl());
     return;
   }
@@ -661,6 +852,9 @@ function compareVersions(a, b) {
 }
 
 async function checkDshUpdate(manual) {
+  // Portable mode ships a fixed dsh version — there is no npm-side update to
+  // apply (updating means re-downloading the portable build).
+  if (config.dshCommand === 'bundled') return;
   const [installed, latest] = await Promise.all([getInstalledDshVersion(), getNpmLatestVersion()]);
   lastChecked = { installed, latest, update: !!installed && !!latest && compareVersions(latest, installed) > 0, checkedAt: Date.now() };
   if (manual) {
@@ -1155,18 +1349,30 @@ function openSettings() { openOverlay('settings.html'); }
 function openBalance() { openOverlay('balance.html'); }
 
 function registerSettingsIpc() {
-  ipcMain.handle('settings:get-state', () => ({
+  ipcMain.handle('settings:get-state', () => {
+    // In bundled (portable) mode the meaningful dsh version is the bundled one.
+    let installed = lastChecked.installed;
+    if (config.dshCommand === 'bundled') {
+      try {
+        const p = require(path.join(bundledPaths().base, 'dsh', 'node_modules', '@deepseek-ai', 'dsh', 'package.json'));
+        installed = p.version;
+      } catch { /* bundled runtime missing */ }
+    }
+    return {
+    appVersion: app.getVersion(),
     language: config.language,
     port: config.port,
     sourceDir: config.sourceDir,
     closeBehavior: config.closeBehavior || '',
     notifyOnTurnEnd: config.notifyOnTurnEnd !== false,
     checkedAt: lastChecked.checkedAt,
-    installed: lastChecked.installed,
+    installed,
     latest: lastChecked.latest,
+
     update: lastChecked.update,
     balance: balanceState,
-  }));
+  };
+  });
   ipcMain.handle('settings:check-update', () => checkDshUpdate(true));
   ipcMain.handle('settings:update-dsh', () => updateDsh());
   ipcMain.handle('settings:close', () => closeOverlay());
@@ -1200,6 +1406,10 @@ function registerSettingsIpc() {
 
 // ---------- app lifecycle ----------
 
+// Isolate portable userData before the single-instance lock is taken (the
+// lock lives in userData — two portable copies must not collide on it).
+isolatePortableUserData();
+
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
   app.quit();
@@ -1209,7 +1419,29 @@ if (!gotLock) {
   });
 
   app.whenReady().then(() => {
+    console.log('[userData]', app.getPath('userData'));
     config = loadConfig();
+    // Portable build ships bundled/: default to bundled mode so it works out
+    // of the box (own runtime + own data directory, never the host's ~/.dsh
+    // sessions). This overrides a leftover explicit "npx" from a normal
+    // install's config; other explicit choices (global / custom path) stay.
+    const hasBundled = bundledRuntimePresent();
+    if (!config.dshCommand || (config.dshCommand === 'npx' && hasBundled)) {
+      config.dshCommand = hasBundled ? 'bundled' : 'npx';
+    } else if (config.dshCommand === 'bundled' && !hasBundled) {
+      // Explicit "bundled" but this build has no portable runtime (e.g. a
+      // normal deb install with a config left over from testing the portable
+      // zip). Fall back to npx so the app keeps working.
+      config.dshCommand = 'npx';
+      setTimeout(() => notify(t('bundledMissingTitle'), t('bundledMissingBody')), 4000);
+    }
+    if (config.dshHome) {
+      balanceApi.setDshHome(config.dshHome);
+    } else if (config.dshCommand === 'bundled' && app.isPackaged) {
+      // Portable mode: keep all dsh data next to the app by default
+      // (DeepSeek-Harness-x64/data/) so ~/.dsh is never touched.
+      balanceApi.setDshHome(path.join(path.dirname(process.execPath), 'data'));
+    }
     registerSettingsIpc();
     Menu.setApplicationMenu(Menu.buildFromTemplate(appMenuTemplate()));
     createTray();

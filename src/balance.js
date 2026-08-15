@@ -17,7 +17,11 @@ const os = require('node:os');
 const path = require('node:path');
 const { decompress } = require('fzstd');
 
-const DSH_HOME = process.env.DSH_HOME || path.join(os.homedir(), '.dsh');
+// dsh data home — default ~/.dsh, overridable via config.dshHome (portable
+// mode keeps all dsh data next to the app instead of polluting ~/.dsh).
+let dshHome = process.env.DSH_HOME || path.join(os.homedir(), '.dsh');
+function setDshHome(h) { if (h) dshHome = h; }
+function getDshHome() { return dshHome; }
 
 // DeepSeek official pricing (CNY per 1M tokens) — api-docs.deepseek.com.
 // Peak/off-peak pricing takes effect 2026-08-17 00:00 (Beijing time);
@@ -55,7 +59,7 @@ function priceFor(model, pricing, now) {
 
 function getApiKey() {
   try {
-    const yaml = fs.readFileSync(path.join(DSH_HOME, '.credentials.yaml'), 'utf8');
+    const yaml = fs.readFileSync(path.join(dshHome, '.credentials.yaml'), 'utf8');
     const m = yaml.match(/^\s*DEEPSEEK_API_KEY\s*:\s*["']?([^\s"']+)/m);
     return m ? m[1] : null;
   } catch {
@@ -126,7 +130,7 @@ async function fetchSessions(port) {
 }
 
 function findSessionFiles() {
-  const root = path.join(DSH_HOME, 'sessions');
+  const root = path.join(dshHome, 'sessions');
   const out = [];
   const walk = (dir) => {
     let entries;
@@ -394,7 +398,8 @@ function saveState(stateFile, state) {
 }
 
 module.exports = {
-  DSH_HOME,
+  setDshHome,
+  getDshHome,
   DEFAULT_PRICING,
   getApiKey,
   fetchOfficialBalance,

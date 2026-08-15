@@ -90,12 +90,42 @@ dsh 通过 npm 发布，桌面端在启动时自动检测（也可在设置中�
 | 字段 | 默认值 | 说明 |
 |---|---|---|
 | `port` | `3080` | dsh 服务端口 |
-| `dshCommand` | `"npx"` | 启动方式：`"npx"`（官方推荐，自动下载）；`"global"`（使用 PATH 上的 `dsh`）；或自定义可执行文件的绝对路径 |
+| `dshCommand` | `"npx"` | 启动方式：`"npx"`（官方推荐，自动下载）；`"global"`（使用 PATH 上的 `dsh`）；`"bundled"`（便携版，使用内置 node 运行内置 dsh——见下文「Linux 便携版」）；或自定义可执行文件的绝对路径 |
+| `dshHome` | `""` | dsh 数据目录（会话/凭据/profile）。留空 = `~/.dsh`；**便携版（bundled）留空 = 应用旁 `data/`**，完全隔离 |
 | `closeBehavior` | `""` | 关闭窗口时的行为：`""`（未设置——首次关闭时询问并记住）；`"tray"`（隐藏到托盘继续运行，dsh 不中断）；`"quit"`（完全退出并停止 dsh）；`"ask"`（每次都询问）。可在设置面板中更改 |
 | `updateUrl` | `""` | 自动更新源（仅 AppImage 生效）：generic HTTP(S) 服务器或 GitHub Releases 地址。留空 = 禁用自动更新 |
 | `sourceDir` | `""` | 本机源码目录：设置后托盘菜单出现「从源码构建并安装」，一键在本机打包 deb 并用系统授权安装（留空 = 隐藏该功能） |
 | `stopExternalDsh` | `true` | 完全退出时，若端口上还有终端启动的外部 `dsh web` 服务，一并终止（仅杀命令行匹配 `dsh web` 的进程，不误伤其他服务；保留后台到托盘时不受影响） |
 | `language` | `"zh"` | 界面语言：`"zh"`（中文）或 `"en"`（English）。可在设置窗口中切换，立即生效 |
+
+## Linux 便携版
+
+不依赖系统 Node/pnpm/dsh 的独立版本：
+
+```bash
+npm run bundle          # 下载 node + pnpm + dsh（固定版本）到 bundled/
+npm run dist:portable   # 构建目录 + 打包 zip（dist-portable/DeepSeek-Harness-x64.zip）
+```
+
+产物为**解压即用目录**（类似 Antigravity-x64 形态）：
+
+```
+DeepSeek-Harness-x64/
+├── deepseek-harness          # 启动器（入口，自动处理 sandbox）
+├── deepseek-harness-desktop   # 实际可执行
+└── resources/
+    ├── app.asar
+    └── bundled/               # 内置 node + pnpm + dsh 运行时
+```
+
+运行：`./DeepSeek-Harness-x64/deepseek-harness`（解压后直接双击/执行；sandbox 不可用时自动加 `--no-sandbox`）
+
+**开箱即用**：无需任何配置——自动检测内置运行时并启用 bundled 模式，默认数据目录 = 应用旁 `data/`（不碰 `~/.dsh`）；配置端口被外部服务占用时自动顺延（绝不显示宿主机自己的会话）。
+
+**配置完全隔离**：便携版的全部应用数据（config、余额状态、日志、缓存）都在应用旁 `data/app/`——普通版与便携版、或多个便携副本的关闭行为等设置互不影响，可同时运行（各自独立窗口、独立 dsh 服务、独立数据）。
+
+- 内置 dsh 版本固定（`scripts/download-bundled.sh` 中可改），更新 = 重新 `npm run bundle` + `dist:portable`
+- bundled 模式自动修复内置 dsh 的已知插件 bug（dsh-plugin-vetting 正则）
 
 ## 开发说明
 

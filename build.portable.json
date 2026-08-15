@@ -1,0 +1,30 @@
+{
+  "appId": "com.quanrobin.dsh-desktop",
+  "productName": "DeepSeek Harness",
+  "files": [
+    "src/**/*",
+    "assets/**/*",
+    "package.json"
+  ],
+  "extraResources": [
+    { "from": "bundled", "to": "bundled" }
+  ],
+  "directories": {
+    "output": "dist-portable"
+  },
+  "publish": [
+    {
+      "provider": "generic",
+      "url": "https://example.invalid/dsh-desktop"
+    }
+  ],
+  "linux": {
+    "target": [
+      "dir"
+    ],
+    "icon": "assets/icon.png",
+    "category": "Development",
+    "maintainer": "Quan-Robin <Quan-Robin@users.noreply.github.com>",
+    "syncDesktopName": true
+  }
+}

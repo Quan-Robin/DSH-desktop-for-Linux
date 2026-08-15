@@ -1,6 +1,6 @@
 {
   "name": "deepseek-harness-desktop",
-  "version": "0.1.33",
+  "version": "0.1.35",
   "description": "Desktop shell for DeepSeek Harness (dsh) — embeds the dsh Web UI in an Electron window with tray and process management",
   "main": "src/main.js",
   "license": "MIT",
@@ -16,7 +16,9 @@
   "desktopName": "deepseek-harness.desktop",
   "scripts": {
     "start": "electron .",
-    "dist": "electron-builder --linux"
+    "dist": "electron-builder --linux",
+    "dist:portable": "electron-builder --linux dir --config build.portable.json && bash scripts/package-portable.sh",
+    "bundle": "bash scripts/download-bundled.sh"
   },
   "build": {
     "appId": "com.quanrobin.dsh-desktop",
