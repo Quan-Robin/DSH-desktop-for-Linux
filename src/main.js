@@ -926,7 +926,6 @@ let balanceState = {
 };
 let lastMenuKey = '';
 const usageCache = new Map();
-const USAGE_STATE_FILE = () => path.join(app.getPath('userData'), 'usage-state.json');
 
 // Re-entrancy guard: the 10s timer and manual refreshes share one in-flight
 // request; callers get the same promise instead of stacking fetches.
@@ -939,6 +938,17 @@ function refreshBalance() {
 
 let lastNotifiedTurnEndSeq = 0; // 0 = not yet initialized (first scan is the baseline)
 
+// Conversation-aware estimate state (see doRefresh): while a conversation is
+// in progress the estimated balance is (official at conversation start − turn
+// cost); once it finishes the estimate freezes until the official balance has
+// been stable for 60s (billing settled), then the official value is adopted.
+let convBase = null;          // official balance when the active conversation started
+let convPrevTurnCost = 0;     // last seen turnCost (growth detection)
+let convOfficialStableAt = 0; // timestamp of the last official balance change
+let convLastOfficial = null;  // last official balance value seen
+let convDone = false;         // conversation finished — estimate frozen
+let convFrozenEst = null;     // frozen estimate while waiting for official to settle
+
 function checkTurnEnd(turnInfo) {
   // Conversation-finished notification: a new turn/end event means the last
   // turn completed. Only notify when the app is not focused; clicking the
@@ -950,6 +960,12 @@ function checkTurnEnd(turnInfo) {
     return;
   }
   lastNotifiedTurnEndSeq = seq;
+  // A real turn/end event means the conversation finished: freeze the
+  // estimate here — doRefresh adopts the official balance once it has been
+  // stable for 60s. (A subagent thinking shows as a quiet turn but no end
+  // event, so the running estimate stays untouched.)
+  convDone = true;
+  convFrozenEst = convBase != null ? convBase - balanceState.turnCost : balanceState.official;
   if (config.notifyOnTurnEnd !== false && (!win || !win.isFocused())) {
     const body = turnInfo.lastSummary ? turnInfo.lastSummary.slice(0, 80) : t('turnDoneBody');
     const n = new Notification({ title: t('turnDoneTitle'), body });
@@ -1045,31 +1061,42 @@ async function doRefresh() {
   balanceState.turnCost = sess ? balanceApi.costOfByModel(sess.userMsgByModel, pricing) : 0;
   checkTurnEnd(sess);
   balanceState.hitRate = 0; // server path has no per-session hit rate; kept for compatibility
-  const state = balanceApi.loadState(USAGE_STATE_FILE());
-  if (state && state.baselineBalance != null && state.baselineConsumed != null) {
-    balanceState.calibrated = true;
-    const localGain = balanceState.consumed - state.baselineConsumed;
-    if (localGain > 0.0001) {
-      // Real-time estimate: baseline minus local usage since calibration.
-      balanceState.estimated = state.baselineBalance - localGain;
-    } else {
-      // No local usage since calibration — follow the live official balance.
-      balanceState.estimated = balanceState.official;
-    }
-    // Auto re-calibrate when the estimate drifts far from the live official
-    // balance (usage we cannot see, e.g. other clients or unfinished turns).
-    if (balanceState.official != null && Math.abs(balanceState.estimated - balanceState.official) > 0.5) {
-      balanceApi.saveState(USAGE_STATE_FILE(), {
-        calibratedAt: Date.now(),
-        baselineBalance: balanceState.official,
-        baselineConsumed: balanceState.consumed,
-      });
-      balanceState.estimated = balanceState.official;
-    }
+  // ---- Conversation-aware estimated balance ----
+  const now = Date.now();
+  const official = balanceState.official;
+  const turn = balanceState.turnCost;
+  const turnGrew = turn > convPrevTurnCost + 1e-9;
+  convPrevTurnCost = turn;
+  if (official == null) {
+    balanceState.estimated = null;
   } else {
-    balanceState.calibrated = false;
-    balanceState.estimated = balanceState.official;
+    if (official !== convLastOfficial) { convLastOfficial = official; convOfficialStableAt = now; }
+    if (turnGrew) {
+      // Conversation in progress: estimate = official at its start − turn cost.
+      if (convBase == null) convBase = official;
+      convDone = false;
+      balanceState.estimated = convBase - turn;
+    } else if (convDone) {
+      // A real turn/end event was seen (conversation finished): keep the
+      // frozen estimate until the official balance settles (60s without a
+      // change), then adopt it as the new base.
+      balanceState.estimated = convFrozenEst;
+      if (now - convOfficialStableAt >= 60_000) {
+        convBase = official;
+        convDone = false;
+        balanceState.estimated = official;
+      }
+    } else if (convBase != null) {
+      // Conversation still in progress, no new tokens this tick (e.g. a
+      // subagent working silently): keep the running estimate.
+      balanceState.estimated = convBase - turn;
+    } else {
+      // Idle: follow the official balance.
+      convBase = official;
+      balanceState.estimated = official;
+    }
   }
+  balanceState.calibrated = convBase != null;
   // Rebuild menus only when the displayed numbers actually change; the 10s
   // refresh then costs nothing when nothing moved (cached usage scan).
   const menuKey = JSON.stringify([balanceState.official, balanceState.estimated, balanceState.calibrated, balanceState.sessionCost.toFixed(4), balanceState.turnCost.toFixed(4)]);
@@ -1089,12 +1116,14 @@ async function calibrateBalance() {
       try { balance = (await balanceApi.fetchOfficialBalance(key)).total; } catch { /* keep null */ }
     }
   }
-  const usage = await balanceApi.computeUsage(usageCache);
-  balanceApi.saveState(USAGE_STATE_FILE(), {
-    calibratedAt: Date.now(),
-    baselineBalance: balance,
-    baselineConsumed: balanceApi.costOfByModel(usage.byModel, config.pricing || {}),
-  });
+  if (balance != null) {
+    // Manual calibration: adopt the current official balance as the base for
+    // the in-progress conversation's estimate.
+    convBase = balance;
+    convDone = false;
+    convPrevTurnCost = -1; // force "turn grew" on next refresh so the estimate recomputes
+    balanceState.calibrated = true;
+  }
   return refreshBalance();
 }
 

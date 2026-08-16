@@ -386,17 +386,6 @@ function cacheHitRate(usage) {
   return total > 0 ? usage.cacheRead / total : 0;
 }
 
-function loadState(stateFile) {
-  try { return JSON.parse(fs.readFileSync(stateFile, 'utf8')); } catch { return null; }
-}
-
-function saveState(stateFile, state) {
-  try {
-    fs.mkdirSync(path.dirname(stateFile), { recursive: true });
-    fs.writeFileSync(stateFile, JSON.stringify(state, null, 2));
-  } catch { /* non-fatal */ }
-}
-
 module.exports = {
   setDshHome,
   getDshHome,
@@ -411,6 +400,4 @@ module.exports = {
   costOfTokens,
   dominantModel,
   cacheHitRate,
-  loadState,
-  saveState,
 };
