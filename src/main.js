@@ -72,6 +72,29 @@ const I18N = {
     pluginDisableRestart: '禁用并重启', pluginSkip: '暂不处理',
     pluginDisabledTitle: '插件已禁用', pluginDisabledBody: '插件 {id} 已禁用，正在重启服务…',
     bundledMissingTitle: '便携运行时缺失', bundledMissingBody: '未找到内置运行时（bundled），已自动回退到 npx 模式启动 dsh。',
+    turnDoneTitle: 'DeepSeek Harness', turnDoneBody: '本轮对话已完成',
+    balAutoRecalibrated: '（估算偏差过大，已自动重校准）',
+    loadingTitle: '正在启动 DeepSeek Harness…',
+    loadingHint: '首次运行会通过 npx 下载 dsh 包，可能需要几分钟，请稍候。',
+    fatalTitle: 'DeepSeek Harness 启动失败',
+    fatalHint: '可尝试托盘菜单中的「重启服务」，或改用浏览器访问。',
+    bootTimeout: '在 {port} 端口等待 dsh 服务超时（120 秒）。请检查网络后从托盘菜单「重启服务」。',
+    spawnFail: '无法启动 dsh 进程：{err}',
+    exitUnexpected: 'dsh 服务意外退出（code={code} signal={signal}）。日志见 {log}',
+    buildConfirmTitle: '从源码构建并安装',
+    buildConfirmMsg: '将在本机打包 deb 并安装（需要系统管理员授权）。',
+    buildConfirmDetail: '源码目录：{dir}\n构建约需 1-2 分钟，完成后会弹出系统授权框。',
+    buildStart: '开始构建', cancel: '取消',
+    buildStartTitle: 'DeepSeek Harness', buildStartBody: '开始从源码构建 deb…',
+    buildFailTitle: '构建失败',
+    buildFailExit: 'npm run dist 退出码 {code}，详情见 dsh.log',
+    buildFailNoDeb: '未在 dist/ 中找到 deb 产物',
+    buildDoneTitle: '构建完成', buildDoneBody: '请求管理员授权安装…',
+    installFailTitle: '安装失败',
+    installFailPkexec: '无法启动 pkexec：{err}\n可手动执行：sudo dpkg -i "{deb}"',
+    installDoneMsg: '新版本已安装，应用即将重启。', installFailExit: 'dpkg 返回码 {code}。\n可手动执行：sudo dpkg -i "{deb}"',
+    updateDownloadedMsg: '新版本已下载完成，是否立即重启安装？',
+    restartNow: '立即重启',
   },
   en: {
     file: 'File', settings: 'Settings…', checkUpdate: 'Check for Updates', buildInstall: 'Build & Install',
@@ -111,6 +134,29 @@ const I18N = {
     pluginDisableRestart: 'Disable & restart', pluginSkip: 'Not now',
     pluginDisabledTitle: 'Plugin disabled', pluginDisabledBody: 'Plugin {id} disabled — restarting the service…',
     bundledMissingTitle: 'Portable runtime missing', bundledMissingBody: 'No bundled runtime found — fell back to npx mode to start dsh.',
+    turnDoneTitle: 'DeepSeek Harness', turnDoneBody: 'The last turn has finished',
+    balAutoRecalibrated: '(estimate drifted — auto re-calibrated)',
+    loadingTitle: 'Starting DeepSeek Harness…',
+    loadingHint: 'The first run downloads the dsh package via npx; this can take a few minutes.',
+    fatalTitle: 'DeepSeek Harness failed to start',
+    fatalHint: 'Try "Restart Service" from the tray menu, or open it in a browser instead.',
+    bootTimeout: 'Timed out waiting for dsh on port {port} (120 s). Check the network and use "Restart Service" from the tray menu.',
+    spawnFail: 'Could not start the dsh process: {err}',
+    exitUnexpected: 'dsh exited unexpectedly (code={code} signal={signal}). See the log at {log}',
+    buildConfirmTitle: 'Build & Install',
+    buildConfirmMsg: 'This builds a deb locally and installs it (admin authorization required).',
+    buildConfirmDetail: 'Source dir: {dir}\nThe build takes ~1-2 minutes, then a system authorization prompt appears.',
+    buildStart: 'Start build', cancel: 'Cancel',
+    buildStartTitle: 'DeepSeek Harness', buildStartBody: 'Building deb from source…',
+    buildFailTitle: 'Build failed',
+    buildFailExit: 'npm run dist exited with code {code}; see dsh.log',
+    buildFailNoDeb: 'No deb artifact found in dist/',
+    buildDoneTitle: 'Build finished', buildDoneBody: 'Requesting admin authorization to install…',
+    installFailTitle: 'Install failed',
+    installFailPkexec: 'Could not start pkexec: {err}\nRun manually: sudo dpkg -i "{deb}"',
+    installDoneMsg: 'The new version is installed — the app will restart now.', installFailExit: 'dpkg exited with code {code}.\nRun manually: sudo dpkg -i "{deb}"',
+    updateDownloadedMsg: 'A new version has been downloaded. Restart and install now?',
+    restartNow: 'Restart Now',
   },
 };
 
@@ -214,9 +260,22 @@ function waitForServer(port, timeoutMs, onTick) {
   });
 }
 
+// Cap dsh.log so a long-lived instance cannot grow it without bound.
+const LOG_MAX_BYTES = 5 * 1024 * 1024;
 function logDshLine(buf) {
   try {
     const file = path.join(app.getPath('userData'), 'dsh.log');
+    // Cheap rotation: past the cap, drop the front half instead of appending.
+    try {
+      const st = fs.statSync(file);
+      if (st.size > LOG_MAX_BYTES) {
+        const keep = Buffer.alloc(Math.floor(LOG_MAX_BYTES / 2));
+        const fd = fs.openSync(file, 'r');
+        fs.readSync(fd, keep, 0, keep.length, st.size - keep.length);
+        fs.closeSync(fd);
+        fs.writeFileSync(file, keep);
+      }
+    } catch { /* no file yet */ }
     fs.appendFileSync(file, `[${new Date().toISOString()}] ${buf.toString()}`);
   } catch { /* log is best-effort */ }
 }
@@ -307,14 +366,27 @@ function disableDshPlugin(pluginId, patchFile) {
     // for non-insert patches"), and disabled is a boolean.
     const entry = `- id: ${pluginId}\n  disabled: true`;
     let text = fs.readFileSync(file, 'utf8');
-    if (text.includes(`id: ${pluginId}`)) return true;
-    // Replace a bare `[]` (possibly after comment lines) with the entry;
-    // otherwise append to the existing block list. Never leave `[]` followed
-    // by block entries — that is invalid YAML and dsh refuses to start.
+    // Already disabled (id + disabled:true pair) — nothing to do. A bare
+    // `id: <pluginId>` without the flag means an unrelated entry: keep going.
+    const escaped = pluginId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const alreadyDisabled = new RegExp(
+      `id:\\s*${escaped}\\s*\\n(?:\\s*\\w+:\\s*[^\\n]*\\n)*?\\s*disabled:\\s*true`
+    ).test(text);
+    if (alreadyDisabled) return true;
     if (/^\[\]\s*$/m.test(text)) {
+      // Replace a bare `[]` (possibly after comment lines) with the entry;
+      // never leave `[]` followed by block entries — that is invalid YAML
+      // and dsh refuses to start.
       text = text.replace(/^\[\]\s*$/m, entry);
     } else {
-      text = text.replace(/\s*$/, '\n') + entry + '\n';
+      const entryRe = new RegExp(`(- id:\\s*${escaped}\\s*\\n)(?!\\s*disabled:)`);
+      if (entryRe.test(text)) {
+        // Entry exists without the flag — set disabled on it (a second entry
+        // with the same id would be a duplicate the loader may reject).
+        text = text.replace(entryRe, `$1  disabled: true\n`);
+      } else {
+        text = text.replace(/\s*$/, '\n') + entry + '\n';
+      }
     }
     fs.writeFileSync(file, text);
     return true;
@@ -344,6 +416,11 @@ function startDsh() {
       ? ['-y', DSH_PACKAGE, 'web', '--port', String(config.port)]
       : ['web', '--port', String(config.port)];
     bin = config.dshCommand === 'npx' ? 'npx' : config.dshCommand === 'global' ? 'dsh' : config.dshCommand;
+    // GUI launches get a bare PATH (~/.npm-global/bin etc. missing) — probe
+    // the common user install locations before spawning, same as the version
+    // checks do; otherwise spawn fails with ENOENT.
+    const probed = probeBin(bin) || probeBin(bin + '.cmd') || probeBin(bin.replace(/\.cmd$/, ''));
+    if (probed) bin = probed;
     if (process.platform === 'win32' && !bin.endsWith('.exe') && !path.isAbsolute(bin) && !bin.includes('/') && !bin.includes('\\')) {
       bin += '.cmd';
     }
@@ -363,7 +440,7 @@ function startDsh() {
   proc.on('error', (err) => {
     // spawn failed (binary not found, etc.)
     dshProc = null;
-    if (!quitting) showFatal(`无法启动 dsh 进程：${err.message}`);
+    if (!quitting) showFatal(t('spawnFail', { err: err.message }));
   });
   let pluginPromptOpen = false; // guard: never stack plugin prompts
   let recentlyDisabledPlugin = null; // loop guard: re-failing after disable → stop
@@ -406,7 +483,7 @@ function startDsh() {
           }
         }
       }
-      showFatal(`dsh 服务意外退出（code=${code} signal=${signal}）。日志见 ${path.join(app.getPath('userData'), 'dsh.log')}`);
+      showFatal(t('exitUnexpected', { code, signal, log: path.join(app.getPath('userData'), 'dsh.log') }));
     }
   });
   dshProc = proc;
@@ -438,10 +515,14 @@ function stopDsh() {
 
 function findPidOnPort(port) {
   return new Promise((resolve) => {
-    execFile('ss', ['-tlnp'], { timeout: 3000 }, (err, stdout) => {
+    execFile('ss', ['-tlnpH'], { timeout: 3000 }, (err, stdout) => {
       if (err) return resolve(null);
+      // Listen lines look like:
+      //   LISTEN 0 511 127.0.0.1:3080 0.0.0.0:* users:(("node",pid=1234,fd=20))
+      // Match the local-address column exactly (":3080" but not ":13080").
+      const re = new RegExp(`\\S+[:.]${port}\\s`, 'i');
       for (const line of stdout.split('\n')) {
-        if (!line.includes(`:${port}`)) continue;
+        if (!re.test(line)) continue;
         const m = line.match(/pid=(\d+)/);
         if (m) return resolve(Number(m[1]));
       }
@@ -479,10 +560,19 @@ async function stopExternalDsh() {
   }
 }
 
-function restartDsh() {
-  stopDsh();
-  // Give the old server a moment to release the port before probing again.
-  setTimeout(boot, 1500);
+async function restartDsh() {
+  const port = config.port;
+  // stopDsh() also waits for an externally-started dsh to be stopped — that
+  // must finish before boot() spawns a new process, or stopExternalDsh may
+  // kill the fresh dsh it mistakes for an external one.
+  await stopDsh();
+  // Wait for the old server to actually release the port (poll instead of a
+  // fixed 1.5s sleep — slow machines needed longer, fast ones less).
+  const deadline = Date.now() + 10000;
+  while (Date.now() < deadline && await isServerUp(port)) {
+    await sleep(250);
+  }
+  boot();
 }
 
 // ---------- pages ----------
@@ -495,8 +585,8 @@ function loadingPage() {
     .hint{color:#8b949e;font-size:13px;max-width:420px;text-align:center}
   </style></head><body>
     <div class="dot"></div>
-    <div>正在启动 DeepSeek Harness…</div>
-    <div class="hint">首次运行会通过 npx 下载 dsh 包，可能需要几分钟，请稍候。</div>
+    <div>${t('loadingTitle')}</div>
+    <div class="hint">${t('loadingHint')}</div>
   </body></html>`;
   return 'data:text/html;charset=utf-8,' + encodeURIComponent(html);
 }
@@ -506,9 +596,9 @@ function fatalPage(message) {
     body{margin:0;height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;background:#0d1117;color:#f85149;font-family:system-ui,sans-serif;padding:40px;text-align:center}
     code{color:#c9d1d9;font-size:13px;word-break:break-all}
   </style></head><body>
-    <div style="font-size:20px">DeepSeek Harness 启动失败</div>
-    <code>${message.replace(/</g, '&lt;')}</code>
-    <div style="color:#8b949e;font-size:13px">可尝试托盘菜单中的「重启服务」，或改用浏览器访问。</div>
+    <div style="font-size:20px">${t('fatalTitle')}</div>
+    <code>${String(message).replace(/</g, '&lt;')}</code>
+    <div style="color:#8b949e;font-size:13px">${t('fatalHint')}</div>
   </body></html>`;
   return 'data:text/html;charset=utf-8,' + encodeURIComponent(html);
 }
@@ -544,7 +634,12 @@ function createWindow() {
     }
   });
   win.webContents.setWindowOpenHandler(({ url }) => {
-    shell.openExternal(url);
+    // Only hand http(s) links to the system browser — a remote page must not
+    // be able to open arbitrary schemes (file:, custom protocol handlers…).
+    try {
+      const u = new URL(url);
+      if (u.protocol === 'http:' || u.protocol === 'https:') shell.openExternal(url);
+    } catch { /* invalid URL — ignore */ }
     return { action: 'deny' };
   });
 
@@ -572,18 +667,12 @@ function createWindow() {
         const raw = details.uploadData && details.uploadData[0] && details.uploadData[0].bytes;
         if (raw) {
           const body = JSON.parse(Buffer.from(raw).toString('utf8'));
-          const method = body && body.method;
           const sid = body && body.payload && body.payload.sessionId;
           if (typeof sid === 'string' && sid.startsWith('session-')) {
             config.balanceSessionId = sid;
             saveConfig();
             refreshBalance();
           }
-          // Diagnostic trace for session-switch debugging.
-          try {
-            const line = `${new Date().toISOString()} ${method || '?'} ${sid || 'no-sid'}`;
-            require('fs').appendFileSync(path.join(app.getPath('userData'), 'switch.log'), line + '\n');
-          } catch { /* non-fatal */ }
         }
       } catch { /* non-fatal */ }
       callback({});
@@ -669,7 +758,7 @@ async function boot() {
   } else if (dshProc !== null) {
     // dshProc === null means spawn failed or dsh exited — already handled
     // by the 'error'/'exit' callbacks, which showed the fatal page.
-    win.loadURL(fatalPage(`在 ${config.port} 端口等待 dsh 服务超时（120 秒）。请检查网络后从托盘菜单「重启服务」。`));
+    win.loadURL(fatalPage(t('bootTimeout', { port: config.port })));
   }
 }
 
@@ -713,10 +802,10 @@ function buildAndInstall() {
   if (!config.sourceDir || building) return;
   const choice = askBox({
     type: 'question',
-    title: '从源码构建并安装',
-    message: '将在本机打包 deb 并安装（需要系统管理员授权）。',
-    detail: `源码目录：${config.sourceDir}\n构建约需 1-2 分钟，完成后会弹出系统授权框。`,
-    buttons: ['开始构建', '取消'],
+    title: t('buildConfirmTitle'),
+    message: t('buildConfirmMsg'),
+    detail: t('buildConfirmDetail', { dir: config.sourceDir }),
+    buttons: [t('buildStart'), t('cancel')],
     defaultId: 0,
     cancelId: 1,
   });
@@ -725,7 +814,7 @@ function buildAndInstall() {
   // Fresh build: remove stale artifacts first so dist/ only holds the new
   // version and the newest-deb pick can never grab an older one.
   fs.rmSync(path.join(config.sourceDir, 'dist'), { recursive: true, force: true });
-  notify('DeepSeek Harness', '开始从源码构建 deb…');
+  notify(t('buildStartTitle'), t('buildStartBody'));
   const proc = spawn('bash', ['-lc', 'npm run dist'], {
     cwd: config.sourceDir,
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -734,33 +823,33 @@ function buildAndInstall() {
   proc.stderr.on('data', logDshLine);
   proc.on('error', (err) => {
     building = false;
-    notify('构建失败', err.message);
+    notify(t('buildFailTitle'), err.message);
   });
   proc.on('exit', (code) => {
     building = false;
     if (code !== 0) {
-      notify('构建失败', `npm run dist 退出码 ${code}，详情见 dsh.log`);
+      notify(t('buildFailTitle'), t('buildFailExit', { code }));
       return;
     }
     const deb = newestDebIn(path.join(config.sourceDir, 'dist'));
     if (!deb) {
-      notify('构建失败', '未在 dist/ 中找到 deb 产物');
+      notify(t('buildFailTitle'), t('buildFailNoDeb'));
       return;
     }
-    notify('构建完成', '请求管理员授权安装…');
+    notify(t('buildDoneTitle'), t('buildDoneBody'));
     const inst = spawn('pkexec', ['dpkg', '-i', deb], { stdio: ['ignore', 'pipe', 'pipe'] });
     inst.stdout.on('data', logDshLine);
     inst.stderr.on('data', logDshLine);
     inst.on('error', (err) => {
-      dialog.showErrorBox('安装失败', `无法启动 pkexec：${err.message}\n可手动执行：sudo dpkg -i "${deb}"`);
+      dialog.showErrorBox(t('installFailTitle'), t('installFailPkexec', { err: err.message, deb }));
     });
     inst.on('exit', (c) => {
       if (c === 0) {
-        askBox({ type: 'info', title: '安装完成', message: '新版本已安装，应用即将重启。', buttons: ['确定'] });
+        askBox({ type: 'info', title: t('buildDoneTitle'), message: t('installDoneMsg'), buttons: [t('ok')] });
         app.relaunch();
         app.exit(0);
       } else {
-        dialog.showErrorBox('安装失败', `dpkg 返回码 ${c}。\n可手动执行：sudo dpkg -i "${deb}"`);
+        dialog.showErrorBox(t('installFailTitle'), t('installFailExit', { code: c, deb }));
       }
     });
   });
@@ -779,8 +868,8 @@ function setupAutoUpdater() {
     const choice = askBox({
       type: 'info',
       title: 'DeepSeek Harness',
-      message: '新版本已下载完成，是否立即重启安装？',
-      buttons: ['立即重启', '稍后'],
+      message: t('updateDownloadedMsg'),
+      buttons: [t('restartNow'), t('later')],
       defaultId: 0,
       cancelId: 1,
     });
@@ -976,14 +1065,6 @@ function checkTurnEnd(turnInfo) {
 
 async function doRefresh() {
   const t0 = Date.now();
-  const logSlow = (label) => {
-    const ms = Date.now() - t0;
-    if (ms > 500) {
-      try {
-        require('fs').appendFileSync(path.join(app.getPath('userData'), 'switch.log'), `[perf] ${label} ${ms}ms\n`);
-      } catch { /* non-fatal */ }
-    }
-  };
   const pricing = config.pricing || {};
   // Kick off the three independent data sources in parallel so a slow one
   // does not serialize the refresh. The official balance resolves first
@@ -1104,7 +1185,7 @@ async function doRefresh() {
     lastMenuKey = menuKey;
     applyMenus();
   }
-  logSlow('refresh');
+  if (Date.now() - t0 > 500) console.log(`[balance] slow refresh: ${Date.now() - t0}ms`);
   return balanceState;
 }
 
@@ -1147,6 +1228,9 @@ function balanceMenuItems() {
     { label: `${t('balOfficial')}: ${fmt(balanceState.official)}`, enabled: false },
     { label: `${t('balEstimate')}: ${fmt(balanceState.estimated)}${balanceState.calibrated ? '' : ` ${t('balUncalibrated')}`}`, enabled: false },
     { label: `${t('balSession')}: ${fmt(balanceState.sessionCost)} | ${t('balTurn')}: ${fmt(balanceState.turnCost)}`, enabled: false },
+    ...(balanceState.autoRecalibratedAt && Date.now() - balanceState.autoRecalibratedAt < 60000
+      ? [{ label: t('balAutoRecalibrated'), enabled: false }]
+      : []),
     { type: 'separator' },
     { label: t('balSessionsTitle'), submenu: sessionsSub.length ? sessionsSub : [{ label: t('balNoSessions'), enabled: false }] },
     { label: t('balDetail'), click: () => openBalance() },
@@ -1350,7 +1434,7 @@ function openOverlay(page) {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false,
+      sandbox: true,
     },
   });
   overlayView = view;

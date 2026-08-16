@@ -15,7 +15,8 @@
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { decompress } = require('fzstd');
+// Parser (zstd decompress + line scan) shared with the worker thread.
+const { emptyUsage, addUsage, parseUsageFile } = require('./usage-parse');
 
 // dsh data home — default ~/.dsh, overridable via config.dshHome (portable
 // mode keeps all dsh data next to the app instead of polluting ~/.dsh).
@@ -43,9 +44,19 @@ const DEFAULT_PRICING = {
   'deepseek-reasoner': { input: 4, cacheHit: 1, output: 16 },
 };
 
+// Beijing hour (0-23) regardless of the machine's local timezone — peak
+// pricing is defined in Beijing time, so a UTC-8 user must not be classified
+// by their own wall clock.
+const beijingHourFmt = new Intl.DateTimeFormat('en-US', {
+  timeZone: 'Asia/Shanghai', hour12: false, hour: 'numeric',
+});
+function beijingHour(now) {
+  const h = Number(beijingHourFmt.format(new Date(now)));
+  return h === 24 ? 0 : h; // some ICU versions render midnight as "24"
+}
+
 function isBeijingPeak(now) {
-  const d = new Date(now);
-  const h = d.getHours(); // local time (UTC+8 for CN users)
+  const h = beijingHour(now);
   return (h >= 9 && h < 12) || (h >= 14 && h < 18);
 }
 
@@ -84,7 +95,10 @@ async function fetchOfficialBalance(apiKey) {
 const singleCache = new Map();
 function findSessionFile(id) {
   if (!id) return null;
-  return findSessionFiles().find((f) => f.includes(id)) || null;
+  // Session files live at <id>/session.jsonl.zstd — compare the directory
+  // name exactly (an includes() substring match grabs the wrong session when
+  // one id is a substring of another).
+  return findSessionFiles().find((f) => path.basename(path.dirname(f)) === id) || null;
 }
 function parseSessionFileById(id) {
   const file = findSessionFile(id);
@@ -145,82 +159,7 @@ function findSessionFiles() {
   return out;
 }
 
-function emptyUsage() {
-  return { input: 0, cacheRead: 0, output: 0, reasoning: 0 };
-}
-
-function addUsage(a, b) {
-  a.input += b.input || 0;
-  a.cacheRead += b.cacheRead || 0;
-  a.output += b.output || 0;
-  a.reasoning += b.reasoning || 0;
-  return a;
-}
-
-// Parse one session file. Returns per-model usage, the max turn number, and the
-// usage of that max turn. The model of each call is paired from the preceding
-// request/header event (stream order). Usage is read from assistant/chunk
-// usage events only (assistant/message also carries usage — a duplicate).
-function extractText(content) {
-  if (!Array.isArray(content)) return '';
-  return content
-    .filter((c) => c && c.type === 'text' && typeof c.text === 'string')
-    .map((c) => c.text)
-    .join('')
-    .trim();
-}
-
-function parseUsageFile(file) {
-  const byModel = {};
-  const userMsgByModel = {}; // usage since the last user/message — the "current turn" cost
-  let currentModel = null;
-  let lastTurnEndSeq = 0;
-  let lastSummary = ''; // final assistant text of the last completed turn
-  let msgText = '';
-  try {
-    const buf = fs.readFileSync(file);
-    const json = Buffer.from(decompress(new Uint8Array(buf))).toString('utf8');
-    for (const line of json.split('\n')) {
-      if (!line.includes('"type":')) continue;
-      try {
-        const ev = JSON.parse(line);
-        if (ev.type === 'request/header') {
-          currentModel = ev.data?.header?.config?.model || currentModel;
-          continue;
-        }
-        if (ev.type === 'user/message') {
-          for (const k of Object.keys(userMsgByModel)) delete userMsgByModel[k];
-          msgText = '';
-          continue;
-        }
-        if (ev.type === 'turn/end') {
-          lastTurnEndSeq = ev.seq || lastTurnEndSeq;
-          lastSummary = msgText;
-          continue;
-        }
-        if (ev.type === 'assistant/message') {
-          const text = extractText(ev.data?.message?.content);
-          if (text) msgText = text;
-          continue;
-        }
-        const u = ev.data?.chunk?.usage;
-        if (!u) continue;
-        const model = currentModel || 'unknown';
-        const norm = {
-          input: u.inputTokens || 0,
-          cacheRead: u.cacheReadTokens || 0,
-          output: u.outputTokens || 0,
-          reasoning: u.reasoningTokens || 0,
-        };
-        const bm = (byModel[model] = byModel[model] || emptyUsage());
-        addUsage(bm, norm);
-        const um = (userMsgByModel[model] = userMsgByModel[model] || emptyUsage());
-        addUsage(um, norm);
-      } catch { /* skip malformed lines */ }
-    }
-  } catch { /* unreadable file: skip */ }
-  return { byModel, userMsgByModel, lastTurnEndSeq, lastSummary };
-}
+// Parse one session file — see usage-parse.js (shared with balance-worker.js).
 
 // Incremental scan: files whose mtime+size are unchanged reuse cached totals.
 // Parsing happens in a worker thread so the first (uncached) scan never
