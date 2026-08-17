@@ -1289,6 +1289,12 @@ function installPluginAndRestart() {
     pluginAvailable = null; // re-probe after restart
     notify('DeepSeek Harness', t('pluginInstallDone'));
     restartDsh();
+    // The menu loses the "install plugin" entry (pluginAvailable becomes
+    // true) — hot-updating the same SNI service leaves GNOME's open-menu
+    // layout stale (duplicate "Build & Install" ghost entry). Recreate the
+    // tray with a fresh service name so the shell re-registers it cleanly.
+    if (sniTray) { try { sniTray.destroy(); } catch { /* ignore */ } sniTray = null; }
+    setTimeout(() => { if (!sniTray) createTray(); }, 2500);
   }
 }
 
