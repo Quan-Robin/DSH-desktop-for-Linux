@@ -36,7 +36,7 @@ function makeMockCtx() {
 }
 
 const ctx = makeMockCtx();
-['/api/state', '/api/usage', '/api/prompt', '/api/approve'].forEach((p) => ctx._declare(p));
+['/api/state', '/api/usage', '/api/prompt', '/api/approve', '/api/set-session'].forEach((p) => ctx._declare(p));
 const { report } = plugin.apply(ctx);
 const diag = report();
 assert.strictEqual(diag.events.attached, true, 'event adapter should attach');
@@ -81,6 +81,16 @@ assert.strictEqual(r.status, 400);
 r = await ctx.request('POST', '/api/prompt', { sessionId: 'session-none', text: 'x' });
 assert.strictEqual(r.status, 200); // explicit sessionId is honored
 
+// --- set-session: desktop reports UI-navigation current session ---
+r = await ctx.request('POST', '/api/set-session', { sessionId: 'session-nav-1' });
+assert.strictEqual(r.status, 200, `set-session ok: ${JSON.stringify(r.json)}`);
+assert.strictEqual(r.json.currentSessionId, 'session-nav-1', 'set-session updates currentSessionId');
+r = await ctx.request('GET', '/api/state');
+assert.strictEqual(r.json.currentSessionId, 'session-nav-1', '/api/state reflects set-session');
+// validation: missing sessionId → 400
+r = await ctx.request('POST', '/api/set-session', {});
+assert.strictEqual(r.status, 400, 'set-session requires sessionId');
+
 // --- degradation: no RPC shape works → 501, not a crash ---
 const bare = makeMockCtx();
 ['/api/state', '/api/usage', '/api/prompt'].forEach((p) => bare._declare(p));
@@ -124,7 +134,7 @@ assert.strictEqual(r.status, 409);
 
 // no approval RPC shape → 501 (degrade, not crash)
 const noRpc = makeMockCtx();
-['/api/state', '/api/usage', '/api/prompt', '/api/approve'].forEach((p) => noRpc._declare(p));
+['/api/state', '/api/usage', '/api/prompt', '/api/approve', '/api/set-session'].forEach((p) => noRpc._declare(p));
 noRpc.server._rpcs = [];
 delete noRpc.server.call;
 noRpc.server.call = null;

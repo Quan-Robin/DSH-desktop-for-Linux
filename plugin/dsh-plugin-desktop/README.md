@@ -13,6 +13,7 @@ DSH-desktop-for-Linux 的伴生插件。运行在 dsh 服务进程内，把桌�
 - `GET /api/usage` → `{ plugin, since, complete: false, byModel, sessions: [{ id, byModel, userMsgByModel, lastTurnEndSeq, lastSummary, updatedAt }] }`
   - `complete: false`：仅覆盖插件加载后的事件（dsh 重启后归零）。桌面端用它做当前会话的实时数据，历史总量仍走本地文件扫描（有 mtime+size 缓存，增量代价很小）。
 - `POST /api/prompt` `{ sessionId?, text }` → 全局快捷输入的发送通道；`sessionId` 缺省用当前会话。
+- `POST /api/set-session` `{ sessionId }` → 桌面壳在用户在 Web UI 中切换会话时调用，让 `/api/state` 的 `currentSessionId` 始终跟随用户实际查看的会话（DS-pet 依赖此接口）。
 
 事件语义与桌面端 `src/usage-parse.js` 完全一致（`request/header` 记模型、`user/message` 开新一轮、`turn/end` 收尾、用量只取 `assistant/chunk`），保证两条路径数字一致。
 

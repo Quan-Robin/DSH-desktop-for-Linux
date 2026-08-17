@@ -110,6 +110,16 @@ class Tracker {
     return r;
   }
 
+  // Desktop shell calls this when the user opens/switches a session in the
+  // web UI — server events alone cannot tell which session the user is
+  // viewing, so without this the DS-pet / desktop would see a stale
+  // currentSessionId whenever navigation happens without an event.
+  setSession(id) {
+    if (typeof id !== 'string' || !id) return;
+    this.currentSessionId = id;
+    this.record(id);
+  }
+
   // One event from the dsh event stream (same JSON objects that get appended
   // to session.jsonl.zstd). Unknown/malformed events are ignored.
   onEvent(ev) {
@@ -432,6 +442,18 @@ module.exports = function apply(ctx) {
   const routes = tryAttachRoutes(ctx, [
     { method: 'get', path: '/api/state', fn: () => tracker.state() },
     { method: 'get', path: '/api/usage', fn: () => tracker.usage() },
+    {
+      method: 'post',
+      path: '/api/set-session',
+      fn: ({ body }) => {
+        const sessionId = body && (body.sessionId || body.id);
+        if (typeof sessionId !== 'string' || !sessionId) {
+          return { status: 400, json: { error: 'sessionId required' } };
+        }
+        tracker.setSession(sessionId);
+        return { ok: true, currentSessionId: tracker.currentSessionId };
+      },
+    },
     {
       method: 'post',
       path: '/api/prompt',

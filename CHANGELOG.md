@@ -2,6 +2,11 @@
 
 本项目的版本更新说明。发布 GitHub Release 时同步引用本文件对应条目。
 
+
+## 0.1.37 (2026-08-17)
+
+- **DS-pet 会话状态修复**：dsh Web UI 内切换会话时，桌面壳始终用 webRequest 观察 `/api/session.*`，并通过插件新增的 `POST /api/set-session` 同步到 `/api/state`；DS-pet 轮询到的 `currentSessionId` 从此跟随用户实际查看的会话（此前插件可用时桌面停止嗅探，导致状态停留在服务器事件）。
+
 ## Unreleased
 
 - **修复（真实 dsh 适配，伴生插件）**：Linux 真机验证中发现并修复 dsh 插件 API 假设——安装 patch 由 `include:` 改为 `insert:` 并注入 `webServer`/`apiProxy`；事件总线改用 `session/event` + `session/created`；HTTP 路由改用 `webServer.register`；`/api/prompt` 改走 `apiProxy.sessions.prompt`；`/api/approve` 通过 `approval/request` answerer 直接审批。移除不兼容的 `ctx.desktopPlugin` 赋值。

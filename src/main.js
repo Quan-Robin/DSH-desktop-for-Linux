@@ -762,7 +762,6 @@ function createWindow() {
     // (the frontend may use different RPCs depending on its cache state).
     ses.webRequest.onBeforeRequest({ urls: ['http://127.0.0.1:*/api/session.*'] }, (details, callback) => {
       try {
-        if (pluginAvailable === true) { callback({}); return; } // /api/state replaces the sniff
         const raw = details.uploadData && details.uploadData[0] && details.uploadData[0].bytes;
         if (raw) {
           const body = JSON.parse(Buffer.from(raw).toString('utf8'));
@@ -772,6 +771,17 @@ function createWindow() {
             config.balanceSessionIdManual = false;
             saveConfig();
             refreshBalance();
+            // Keep the companion plugin's /api/state (and therefore the
+            // DS-pet) in sync with what the user is actually viewing. The
+            // plugin cannot infer UI-navigation sessions from server events
+            // alone, so the desktop reports them here.
+            if (pluginAvailable === true) {
+              fetch(`http://127.0.0.1:${config.port}/api/set-session`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ sessionId: sid }),
+              }).catch(() => {});
+            }
           }
         }
       } catch { /* non-fatal */ }
