@@ -683,6 +683,11 @@ function createWindow() {
     minHeight: 480,
     title: 'DeepSeek Harness',
     icon: nativeImage.createFromPath(ICON_PATH),
+    // First startup: the view is blank until the (loading) page paints; an
+    // unpainted BrowserWindow on some compositors renders transparent with
+    // ghosting until a resize forces a repaint. Paint the window bg from the
+    // start (matches the loading/fatal pages).
+    backgroundColor: '#0d1117',
     webPreferences: {
       preload: path.join(__dirname, 'webview-preload.js'),
       contextIsolation: true,
@@ -703,6 +708,9 @@ function createWindow() {
     },
   });
   win.contentView.addChildView(mainView);
+  // Same reason as the window backgroundColor: an unpainted view can composite
+  // as transparent with trailing ghost images until a repaint.
+  mainView.setBackgroundColor('#0d1117');
 
   // Inject the in-page session menu/pins whenever the dsh UI (re)loads. The
   // script self-guards against double injection and retries __ModuleLoader__
@@ -2074,8 +2082,12 @@ function createTray() {
       onActivate: () => toggleWindow(),
     }).then((handle) => {
       sniTray = handle;
+      // Drop any native Tray left over from an earlier SNI failure so the
+      // system tray never shows two icons/menus.
+      if (tray) { try { tray.destroy(); } catch { /* ignore */ } tray = null; }
     }).catch((err) => {
       console.error('[tray] SNI failed, falling back to Electron Tray:', err.message);
+      if (tray) { try { tray.destroy(); } catch { /* ignore */ } tray = null; }
       tray = new Tray(nativeImage.createFromPath(TRAY_ICON_PATH));
       tray.setToolTip('DeepSeek Harness');
       tray.setContextMenu(Menu.buildFromTemplate(trayMenuTemplate()));
@@ -2085,6 +2097,7 @@ function createTray() {
     });
     return;
   }
+  if (tray) { try { tray.destroy(); } catch { /* ignore */ } tray = null; }
   tray = new Tray(nativeImage.createFromPath(TRAY_ICON_PATH));
   tray.setToolTip('DeepSeek Harness');
   tray.setContextMenu(Menu.buildFromTemplate(trayMenuTemplate()));

@@ -235,7 +235,8 @@
   function buildDomOnlyMenu(event) {
     var editable = editableFrom(event.target);
     var selection = selectedText(editable).trim();
-    if (!editable && !selection) return; // nothing actionable without services
+    var row = rowFrom(event.target);
+    if (!editable && !selection && !row) return; // nothing actionable without services
     event.preventDefault();
     event.stopPropagation();
     close();
@@ -260,6 +261,16 @@
       }, 'Ctrl+A');
     } else if (selection) {
       add(root, '复制所选文本', function () { return copy(selection, '已复制'); }, 'Ctrl+C');
+    } else if (row) {
+      var rowTitle = (row.getAttribute('aria-label') || row.getAttribute('title') || row.textContent || '').trim();
+      if (rowTitle) {
+        add(root, '置顶会话', function () { toMain('pins:toggle', { id: rowTitle, title: rowTitle }); toast('已置顶（列表上方查看）'); });
+        add(root, '取消置顶', function () { toMain('pins:toggle', { id: rowTitle, title: rowTitle }); toast('已取消置顶'); });
+        split(root);
+      }
+      add(root, '刷新', function () { globalThis.location.reload(); }, 'Ctrl+R');
+      positionMenu(root, event);
+      return;
     }
     split(root);
     add(root, '刷新', function () { globalThis.location.reload(); }, 'Ctrl+R');
@@ -796,6 +807,7 @@
     function apply(ctx) {
       sessionsService = ctx.get('sessions');
       workspacesService = ctx.get('workspaces');
+      console.log('[dsh-desktop] factory.apply ran; sessionsService =', !!sessionsService);
       style = document.createElement('style');
       style.dataset.desktopInject = 'session-menu';
       style.textContent = CSS;
@@ -830,6 +842,7 @@
   function directStart() {
     if (window.__dshDesktopMenuApplied) return;
     window.__dshDesktopMenuApplied = true;
+    console.log('[dsh-desktop] directStart: menu bootstrapped (services may be null)');
     var style = document.createElement('style');
     style.dataset.desktopInject = 'session-menu';
     style.textContent = CSS;
