@@ -668,17 +668,29 @@ function createWindow() {
   });
   if (ws.maximized) win.maximize();
 
+  // The main content lives in its own WebContentsView so a docked sidebar
+  // (files panel) can be laid out beside it without overlapping.
+  mainView = new WebContentsView({
+    webPreferences: {
+      preload: path.join(__dirname, 'webview-preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+    },
+  });
+  win.contentView.addChildView(mainView);
+
   // Inject the in-page session menu/pins whenever the dsh UI (re)loads. The
   // script self-guards against double injection and retries __ModuleLoader__
   // on its own; runs only for the app origin (the loading page is a data: URL).
   const injectIfAppOrigin = () => {
     try {
-      const u = new URL(win.webContents.getURL());
+      const u = new URL(mainView.webContents.getURL());
       if (u.origin === new URL(appUrl()).origin) injectSessionMenu();
     } catch { /* not a URL yet */ }
   };
-  win.webContents.on('did-finish-load', injectIfAppOrigin);
-  win.webContents.on('did-navigate', injectIfAppOrigin);
+  mainView.webContents.on('did-finish-load', injectIfAppOrigin);
+  mainView.webContents.on('did-navigate', injectIfAppOrigin);
 
   // Persist bounds (debounced) so the window reopens where the user left it.
   let boundsTimer = null;
@@ -699,7 +711,7 @@ function createWindow() {
 
   // Keep navigation inside the local dsh server; open everything else in the system browser.
   const allowedHost = new URL(appUrl()).host;
-  win.webContents.on('will-navigate', (event, url) => {
+  mainView.webContents.on('will-navigate', (event, url) => {
     try {
       const u = new URL(url);
       // File drops that the page does not handle navigate to file:// — route
@@ -718,7 +730,7 @@ function createWindow() {
       event.preventDefault();
     }
   });
-  win.webContents.setWindowOpenHandler(({ url }) => {
+  mainView.webContents.setWindowOpenHandler(({ url }) => {
     // Only hand http(s) links to the system browser — a remote page must not
     // be able to open arbitrary schemes (file:, custom protocol handlers…).
     try {
@@ -735,7 +747,7 @@ function createWindow() {
   });
 
   // A page reload drops injected CSS — re-apply the mask if the overlay is open.
-  win.webContents.on('did-navigate', () => {
+  mainView.webContents.on('did-navigate', () => {
     if (overlayView) applyOverlayMask();
   });
 
@@ -744,7 +756,7 @@ function createWindow() {
   // server exposes no "current session" state, but we can observe the
   // request and make it our current session (auto-follows browsing switches).
   try {
-    const ses = win.webContents.session;
+    const ses = mainView.webContents.session;
     // Follow session switches made INSIDE this window. Any /api/session.*
     // request carrying a session id counts as "the user opened that session"
     // (the frontend may use different RPCs depending on its cache state).
@@ -810,7 +822,7 @@ function createWindow() {
     else if (choice === 1) { config.closeBehavior = 'quit'; saveConfig(); quitting = true; app.quit(); }
     else { config.closeBehavior = 'ask'; saveConfig(); win.hide(); } // this time: tray default
   });
-  win.on('closed', () => { win = null; maskCssKey = null; filesView = null; });
+  win.on('closed', () => { win = null; mainView = null; maskCssKey = null; filesView = null; });
 
   if (config.filesPanelOpen === true) toggleFilesPanel(true);
   return win;
@@ -818,7 +830,7 @@ function createWindow() {
 
 async function boot() {
   if (!win) createWindow();
-  win.loadURL(loadingPage());
+  mainView.webContents.loadURL(loadingPage());
 
   // Portable mode: never reuse an external dsh server on the configured port
   // (that would show the host's own ~/.dsh sessions). Pick a free port
@@ -833,7 +845,7 @@ async function boot() {
   if (await isServerUp(config.port)) {
     // A dsh server is already running on this port — reuse it.
     console.log(`[boot] reusing existing dsh on ${config.port}`);
-    win.loadURL(appUrl());
+    mainView.webContents.loadURL(appUrl());
     return;
   }
 
@@ -843,17 +855,17 @@ async function boot() {
   });
   if (win && !win.isDestroyed()) win.setTitle('DeepSeek Harness');
   if (ready) {
-    win.loadURL(appUrl());
+    mainView.webContents.loadURL(appUrl());
   } else if (dshProc !== null) {
     // dshProc === null means spawn failed or dsh exited — already handled
     // by the 'error'/'exit' callbacks, which showed the fatal page.
-    win.loadURL(fatalPage(t('bootTimeout', { port: config.port })));
+    mainView.webContents.loadURL(fatalPage(t('bootTimeout', { port: config.port })));
   }
 }
 
 function showFatal(message) {
   dialog.showErrorBox('DeepSeek Harness', message);
-  if (win && !win.isDestroyed()) win.loadURL(fatalPage(message));
+  if (win && !win.isDestroyed()) mainView.webContents.loadURL(fatalPage(message));
 }
 
 // ---------- build & install (deb, self-packaging on this machine) ----------
@@ -1171,7 +1183,7 @@ function injectSessionMenu() {
         .map((f) => fs.readFileSync(path.join(__dirname, 'inject', f), 'utf8'))
         .join('\n;\n');
     }
-    win.webContents.executeJavaScript(sessionMenuJs, true).catch((e) => {
+    mainView.webContents.executeJavaScript(sessionMenuJs, true).catch((e) => {
       console.error('[inject] session menu failed:', e.message);
     });
   } catch (e) {
@@ -1180,7 +1192,7 @@ function injectSessionMenu() {
 }
 
 function sendPinsToPage() {
-  if (win && !win.isDestroyed()) win.webContents.send('pins-changed', config.pinnedSessions || []);
+  if (win && !win.isDestroyed()) mainView.webContents.send('pins-changed', config.pinnedSessions || []);
 }
 
 function registerPinIpc() {
@@ -1203,7 +1215,7 @@ function jumpToSession(id) {
     win.show();
     win.focus();
     const hit = (balanceState.sessions || []).find((x) => x.id === id);
-    win.webContents.send('jump', { id, title: hit ? hit.title : '' });
+    mainView.webContents.send('jump', { id, title: hit ? hit.title : '' });
   }
 }
 
@@ -1213,22 +1225,17 @@ function jumpToSession(id) {
 // by the EXISTING balance pipeline (sessionCost/turnCost) and the official
 // session.list tokenUsage.
 
+let mainView = null;
 let filesView = null;
 let workspaceState = { list: [], currentPath: '', currentSessionId: null };
-const FILES_PANEL_W = 280;
+const FILES_PANEL_W = 260;
 
 function layoutFilesPanel() {
   if (!win || win.isDestroyed()) return;
   const [w, h] = win.getContentSize();
-  // Always try to resize the main view so the panel doesn't overlap.
-  // If contentView.children is not available (older Electron), the panel
-  // overlays the page, which is acceptable but not ideal.
-  try {
-    const main = win.contentView.children.find((c) => c.webContents === win.webContents);
-    if (main) {
-      main.setBounds({ x: 0, y: 0, width: filesView ? Math.max(200, w - FILES_PANEL_W) : w, height: h });
-    }
-  } catch { /* older Electron: panel overlays the page */ }
+  if (mainView) {
+    mainView.setBounds({ x: 0, y: 0, width: filesView ? Math.max(200, w - FILES_PANEL_W) : w, height: h });
+  }
   if (filesView) {
     const panelX = w - FILES_PANEL_W;
     const panelW = FILES_PANEL_W;
@@ -1270,7 +1277,7 @@ function toggleFilesPanel(on) {
 function sendToPage(kind, payload) {
   if (win && !win.isDestroyed()) {
     // Rides the same mailbox protocol as pins/jump (see webview-preload.js).
-    if (kind === 'insert-composer') win.webContents.send('insert', payload);
+    if (kind === 'insert-composer') mainView.webContents.send('insert', payload);
   }
 }
 
@@ -2012,14 +2019,14 @@ const OVERLAY_MASK_CSS = `
 
 function applyOverlayMask() {
   if (maskCssKey || !win || win.isDestroyed()) return;
-  win.webContents.insertCSS(OVERLAY_MASK_CSS).then((key) => { maskCssKey = key; }).catch(() => {});
+  mainView.webContents.insertCSS(OVERLAY_MASK_CSS).then((key) => { maskCssKey = key; }).catch(() => {});
 }
 
 function removeOverlayMask() {
   if (!maskCssKey || !win || win.isDestroyed()) return;
   const key = maskCssKey;
   maskCssKey = null;
-  win.webContents.removeInsertedCSS(key).catch(() => {});
+  mainView.webContents.removeInsertedCSS(key).catch(() => {});
 }
 
 function centeredOverlayBounds() {
