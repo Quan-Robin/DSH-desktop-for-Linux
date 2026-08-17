@@ -1,11 +1,14 @@
 # dsh-plugin-desktop
 
-DSH-desktop-for-Linux 的伴生插件。运行在 dsh 服务进程内，把桌面端需要的内部状态以稳定 HTTP 端点暴露出来，替代桌面端过去的两个 hack：
+DSH-desktop-for-Linux 的**官方伴生插件**（独立发布，`dsh-plugin` 话题）。
+
+**定位：大部分桌面端功能 + 小部分插件功能。** 原版桌面端保持极简；安装此插件才解锁增强功能。运行在 dsh 服务进程内，一方面把桌面端需要的内部状态以稳定 HTTP 端点暴露出来（替代桌面端过去的 hack），另一方面往 Web UI 注入增强的页内右键菜单与「置顶会话」扩展。
 
 | 桌面端旧做法 | 插件做法 |
 |---|---|
 | 嗅探 `webRequest` 的 `/api/session.*` POST body 判断当前会话 | `GET /api/state` 直接给出 |
 | 解压 `~/.dsh/sessions/**/session.jsonl.zstd` 估算用量 | `GET /api/usage` 给出事件流实时聚合 |
+| （无） | 页内完整右键菜单（会话/工作区/正文/链接/输入框）+「置顶会话」扩展（client 注入） |
 
 ## 端点
 
@@ -30,9 +33,15 @@ DSH-desktop-for-Linux 的伴生插件。运行在 dsh 服务进程内，把桌�
 
 ## 安装
 
-桌面端已内置安装入口（托盘菜单 / 设置页「安装伴生插件」）：把本目录拷贝到
-`$DSH_HOME/profiles/web/node_modules/dsh-plugin-desktop/`，并在
-`$DSH_HOME/profiles/web/cordis.patch.yml` 追加：
+**方式一（推荐，独立发布）**：
+
+```bash
+dsh plugin add github:Quan-Robin/dsh-plugin-desktop
+```
+
+**方式二（桌面端内置）**：DSH-desktop-for-Linux 托盘/设置页「安装伴生插件」一键安装（从应用内拷贝 + patch 注册）。
+
+手动亦可：把本目录拷贝到 `$DSH_HOME/profiles/web/node_modules/dsh-plugin-desktop/`，并在 `$DSH_HOME/profiles/web/cordis.patch.yml` 追加：
 
 ```yaml
 - insert:
@@ -44,6 +53,13 @@ DSH-desktop-for-Linux 的伴生插件。运行在 dsh 服务进程内，把桌�
 ```
 
 然后重启 dsh 服务。手动验证：`curl http://127.0.0.1:3080/api/state`。
+
+## 页内增强（client 注入，随插件加载）
+
+安装后 dsh Web UI 自动获得：
+
+- **完整右键菜单**：会话 / 工作区 / 正文编辑 / 链接 / 输入框，各场景对应操作；检测到社区 @baihejiangnan/dsh-session-context-menu 已装时自动让位，仅注册「置顶会话」为其扩展
+- **置顶会话**：会话行右键「置顶会话」→ 侧边栏独立「📌 置顶」分区（状态由桌面端保管）；右键会话菜单显示「置顶/取消置顶」随状态切换
 
 ## 适配真实 dsh（重要）
 
