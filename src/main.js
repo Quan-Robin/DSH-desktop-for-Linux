@@ -700,6 +700,10 @@ function createWindow() {
   if (ws.maximized) win.maximize();
   // Show only once the first frame is ready (no transparent startup frame).
   win.once('ready-to-show', () => { if (win && !win.isDestroyed() && !win.isVisible()) win.show(); });
+  // First-run layout: the main view has no bounds until layoutFilesPanel runs
+  // (it is only called on resize/toggle) — lay it out immediately or the first
+  // frame is an empty transparent window until the user manually resizes.
+  layoutFilesPanel();
 
   // The main content lives in its own WebContentsView so a docked sidebar
   // (files panel) can be laid out beside it without overlapping.

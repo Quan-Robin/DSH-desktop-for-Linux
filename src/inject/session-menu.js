@@ -864,14 +864,14 @@
     if (window.__dshDesktopMenuApplied) return;
     window.__dshDesktopMenuApplied = true;
     console.log('[dsh-desktop] directStart: menu bootstrapped (services may be null)');
-    // With the original session-context-menu plugin present, do not add a
-    // second contextmenu handler — it owns the menu. We only manage pins
-    // (independent section + pin extension registered into its registry).
+    // Pin-section styling is always needed (the pinned list boxes come from
+    // CSS); only the contextmenu handler is skipped when the original
+    // session-context-menu plugin owns the menu.
+    var style = document.createElement('style');
+    style.dataset.desktopInject = 'session-menu';
+    style.textContent = CSS;
+    document.head.appendChild(style);
     if (!officialPluginPresent()) {
-      var style = document.createElement('style');
-      style.dataset.desktopInject = 'session-menu';
-      style.textContent = CSS;
-      document.head.appendChild(style);
       document.addEventListener('contextmenu', onContextMenu, true);
       document.addEventListener('pointerdown', outside, true);
       document.addEventListener('keydown', keyboard, true);

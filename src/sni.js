@@ -12,6 +12,11 @@
 // Callers keep the returned handle alive.
 
 const dbus = require('dbus-next');
+
+// Unique service-name suffix per SNI service instance: the shell tracks items
+// by bus name — reusing one name across recreations leaves stale registrations
+// (duplicate tray icons / menu entries). Never reuse a suffix.
+let sniSeq = 1;
 const { nativeImage } = require('electron');
 
 function sleep(ms) {
@@ -208,7 +213,7 @@ async function createSniTray({ iconPath, title, menuItems, onActivate, onSeconda
   const iface = new SniItem({ iconPath, title, onActivate, onSecondaryActivate });
   const menu = new Dbmenu(menuItems);
 
-  const serviceName = `org.kde.StatusNotifierItem-${process.pid}-1`;
+  const serviceName = `org.kde.StatusNotifierItem-${process.pid}-${(sniSeq++)}`;
   await bus.requestName(serviceName);
   bus.export('/StatusNotifierItem', iface);
   bus.export('/MenuBar', menu);
