@@ -1,0 +1,9 @@
+{
+  "name": "dsh-plugin-desktop",
+  "version": "0.1.0",
+  "description": "Companion plugin for DSH-desktop: exposes /api/state, /api/usage and /api/prompt so the desktop shell does not have to sniff web traffic or parse session files",
+  "main": "lib/index.js",
+  "license": "MIT",
+  "author": "Quan-Robin",
+  "keywords": ["dsh", "dsh-plugin", "desktop"]
+}

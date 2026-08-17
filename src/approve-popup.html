@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>DSH 审批</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { margin: 0; padding: 14px 16px; font: 13px/1.5 system-ui, "Noto Sans CJK SC", sans-serif; display: flex; flex-direction: column; gap: 10px; height: calc(100vh - 28px); box-sizing: border-box; }
+  h1 { font-size: 13px; margin: 0; color: #c62828; }
+  #summary { flex: 1; overflow: auto; font-family: ui-monospace, Consolas, monospace; font-size: 12px; opacity: .85; white-space: pre-wrap; word-break: break-all; background: rgba(128,128,128,.08); border-radius: 7px; padding: 8px 10px; }
+  .row { display: flex; gap: 8px; justify-content: flex-end; }
+  button { padding: 5px 16px; border-radius: 7px; border: 1px solid rgba(128,128,128,.4); background: transparent; color: inherit; cursor: pointer; font: inherit; }
+  button.primary { background: #2e7d32; border-color: #2e7d32; color: #fff; }
+  button.danger { background: transparent; border-color: #c62828; color: #c62828; }
+</style>
+</head>
+<body>
+<h1 id="title">⚠️ DSH 等待审批</h1>
+<div id="summary">…</div>
+<div class="row">
+  <button id="btn-view">查看详情</button>
+  <button id="btn-reject" class="danger">拒绝</button>
+  <button id="btn-approve" class="primary">批准</button>
+</div>
+<script>
+  const els = {
+    title: document.getElementById('title'),
+    summary: document.getElementById('summary'),
+  };
+  const D = { zh: ['⚠️ DSH 等待审批', '查看详情', '拒绝', '批准'], en: ['⚠️ DSH awaits approval', 'View details', 'Reject', 'Approve'] };
+  let lang = 'zh';
+  window.desktop.getState().then((s) => { lang = (s && s.language) || 'zh'; applyLang(); });
+  function applyLang() {
+    const d = D[lang] || D.zh;
+    els.title.textContent = d[0];
+    document.getElementById('btn-view').textContent = d[1];
+    document.getElementById('btn-reject').textContent = d[2];
+    document.getElementById('btn-approve').textContent = d[3];
+  }
+  window.desktop.onApprovalShow((ap) => {
+    els.summary.textContent = (ap && ap.summary) || '…';
+  });
+  document.getElementById('btn-view').addEventListener('click', () => window.desktop.approvalDecide('view'));
+  document.getElementById('btn-reject').addEventListener('click', async () => {
+    const r = await window.desktop.approvalDecide('reject');
+    if (r && r.ok === false && r.status === 501) els.summary.textContent = '此 dsh 版本不支持远程审批，请到主窗口操作';
+  });
+  document.getElementById('btn-approve').addEventListener('click', async () => {
+    const r = await window.desktop.approvalDecide('approve');
+    if (r && r.ok === false && r.status === 501) els.summary.textContent = '此 dsh 版本不支持远程审批，请到主窗口操作';
+  });
+</script>
+</body>
+</html>

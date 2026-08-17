@@ -1,0 +1,361 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Files — DeepSeek Harness</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { margin: 0; font: 13px/1.45 system-ui, "Noto Sans CJK SC", sans-serif; display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+  header { display: flex; align-items: center; gap: 6px; padding: 8px 10px; border-bottom: 1px solid rgba(128,128,128,.25); }
+  header select { flex: 1; min-width: 0; font: inherit; border-radius: 6px; padding: 3px 6px; border: 1px solid rgba(128,128,128,.4); background: transparent; color: inherit; }
+  header button { border: none; background: transparent; cursor: pointer; font-size: 14px; padding: 2px 4px; opacity: .7; }
+  header button:hover { opacity: 1; }
+  #stats { padding: 7px 12px; border-bottom: 1px solid rgba(128,128,128,.25); font-variant-numeric: tabular-nums; font-size: 12px; }
+  #stats .row { display: flex; justify-content: space-between; gap: 8px; }
+  #stats .k { color: rgba(128,128,128,1); }
+  #stats .cost { color: #2e7d32; }
+  #tabs { display: flex; gap: 4px; padding: 6px 8px 0; }
+  .tab { flex: 1; text-align: center; padding: 4px 0; border-radius: 6px 6px 0 0; border: 1px solid rgba(128,128,128,.25); border-bottom: none; cursor: pointer; font-size: 12px; color: rgba(128,128,128,1); user-select: none; }
+  .tab.active { color: inherit; background: rgba(77,107,254,.12); border-color: rgba(77,107,254,.5); font-weight: 500; }
+  .page { flex: 1; overflow: auto; display: none; flex-direction: column; }
+  .page.active { display: flex; }
+  #searchbar { display: flex; gap: 6px; padding: 8px; }
+  #searchbar input { flex: 1; font: inherit; border: 1px solid rgba(128,128,128,.4); border-radius: 6px; padding: 4px 8px; background: transparent; color: inherit; outline: none; }
+  #searchbar input:focus { border-color: #4d6bfe; }
+  .hit { padding: 4px 10px; cursor: pointer; }
+  .hit:hover { background: rgba(128,128,128,.12); }
+  .hit .where { font-size: 11px; color: rgba(128,128,128,1); font-family: ui-monospace, Consolas, monospace; }
+  .hit .what { font-family: ui-monospace, Consolas, monospace; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #gitbar { display: flex; align-items: center; gap: 8px; padding: 8px 10px; font-size: 12px; border-bottom: 1px solid rgba(128,128,128,.2); }
+  #gitbar .branch { font-family: ui-monospace, Consolas, monospace; }
+  #gitbar button { margin-left: auto; }
+  .gfile { display: flex; gap: 8px; padding: 3px 10px; font-family: ui-monospace, Consolas, monospace; font-size: 11px; cursor: pointer; }
+  .gfile:hover { background: rgba(128,128,128,.12); }
+  .gfile .st { width: 2ch; font-weight: 700; }
+  .st.M { color: #e65100; } .st.A { color: #2e7d32; } .st.D { color: #c62828; }
+  #diff { margin: 0; padding: 8px 10px; overflow: auto; font: 11px/1.5 ui-monospace, Consolas, monospace; white-space: pre; }
+  #diff .add { color: #2e7d32; } #diff .del { color: #c62828; } #diff .hunk { color: rgba(128,128,128,1); }
+  #tree { flex: 1; overflow: auto; padding: 4px 4px 12px; }
+  .node { display: flex; align-items: center; gap: 5px; padding: 3px 6px 3px calc(6px + var(--d, 0) * 14px); border-radius: 5px; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; user-select: none; }
+  .node:hover { background: rgba(128,128,128,.12); }
+  .node .tw { width: 12px; flex: none; opacity: .6; font-size: 10px; }
+  .node .nm { overflow: hidden; text-overflow: ellipsis; }
+  .node.file .tw { text-align: center; }
+  .node.dir { font-weight: 500; }
+  .node .badge { margin-left: auto; font-size: 10px; color: rgba(128,128,128,1); }
+  .empty { padding: 18px 14px; color: rgba(128,128,128,1); text-align: center; }
+  .trunc { padding: 6px 10px; font-size: 11px; color: rgba(128,128,128,1); }
+  #preview { border-top: 1px solid rgba(128,128,128,.25); max-height: 38%; display: flex; flex-direction: column; }
+  #preview .pv-head { display: flex; align-items: center; gap: 6px; padding: 6px 10px; font-size: 12px; }
+  #preview .pv-head .t { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
+  #preview pre { margin: 0; padding: 8px 10px; overflow: auto; font: 11px/1.5 ui-monospace, Consolas, monospace; opacity: .85; flex: 1; }
+  #preview button { font-size: 11px; padding: 2px 8px; border-radius: 5px; border: 1px solid rgba(128,128,128,.4); background: transparent; color: inherit; cursor: pointer; }
+</style>
+</head>
+<body>
+<header>
+  <select id="ws" title=""></select>
+  <button id="btn-refresh" title="refresh">🔄</button>
+  <button id="btn-opendir" title="open in file manager">📂</button>
+  <button id="btn-close" title="close">✕</button>
+</header>
+<div id="stats">
+  <div class="row"><span class="k" data-i18n="sessionTokens">会话 tokens</span><span id="st-tok">…</span></div>
+  <div class="row"><span class="k" data-i18n="sessionCost">会话花费</span><span id="st-cost" class="cost">…</span></div>
+  <div class="row"><span class="k" data-i18n="turnCost">本轮花费</span><span id="st-turn" class="cost">…</span></div>
+</div>
+<div id="tabs">
+  <div class="tab active" id="tab-files" data-i18n="tabFiles">文件</div>
+  <div class="tab" id="tab-search" data-i18n="tabSearch">搜索</div>
+  <div class="tab" id="tab-git" data-i18n="tabGit">变更</div>
+</div>
+<div class="page active" id="page-files" style="overflow:auto; padding: 4px 4px 12px;"></div>
+<div class="page" id="page-search">
+  <div id="searchbar"><input id="search-q" placeholder="" spellcheck="false"></div>
+  <div id="search-results" style="flex:1; overflow:auto;"></div>
+</div>
+<div class="page" id="page-git">
+  <div id="gitbar"><span class="branch" id="git-branch">…</span><button id="git-refresh" data-i18n="refresh">刷新</button></div>
+  <div id="git-files" style="max-height:32%; overflow:auto;"></div>
+  <pre id="diff"></pre>
+</div>
+<div id="preview" hidden>
+  <div class="pv-head"><span class="t" id="pv-title"></span>
+    <button id="pv-insert" data-i18n="pvInsert">引用此文件</button>
+    <button id="pv-close">✕</button>
+  </div>
+  <pre id="pv-body"></pre>
+</div>
+<script>
+  const DICT = {
+    zh: {
+      sessionTokens: '会话 tokens', sessionCost: '会话花费', turnCost: '本轮花费',
+      tabFiles: '文件', tabSearch: '搜索', tabGit: '变更', refresh: '刷新',
+      searchPh: '搜索工作区文件内容…', noResults: '（无结果）', searching: '搜索中…',
+      gitNone: '（非 git 工作区）', gitClean: '（无变更）',
+      pickWs: '选择工作区…', noWs: '打开一个会话后，这里显示其工作区文件',
+      emptyDir: '（空目录）', truncated: '条目过多，已截断',
+      clickHint: '单击引用 · 双击预览', binary: '（二进制文件）', tooLarge: '（文件过大）',
+      pvInsert: '引用此文件', noSession: '—',
+    },
+    en: {
+      sessionTokens: 'Session tokens', sessionCost: 'Session cost', turnCost: 'Last turn cost',
+      tabFiles: 'Files', tabSearch: 'Search', tabGit: 'Changes', refresh: 'Refresh',
+      searchPh: 'search workspace file contents…', noResults: '(no results)', searching: 'searching…',
+      gitNone: '(not a git workspace)', gitClean: '(clean)',
+      pickWs: 'Pick a workspace…', noWs: 'Open a session to browse its workspace files',
+      emptyDir: '(empty)', truncated: 'too many entries — truncated',
+      clickHint: 'click to reference · double-click to preview', binary: '(binary file)', tooLarge: '(file too large)',
+      pvInsert: 'Reference this file', noSession: '—',
+    },
+  };
+  let lang = 'zh';
+  const d = () => DICT[lang] || DICT.zh;
+
+  const els = {
+    ws: document.getElementById('ws'), tree: document.getElementById('page-files'),
+    tok: document.getElementById('st-tok'), cost: document.getElementById('st-cost'), turn: document.getElementById('st-turn'),
+    preview: document.getElementById('preview'), pvTitle: document.getElementById('pv-title'), pvBody: document.getElementById('pv-body'),
+    searchQ: document.getElementById('search-q'), searchResults: document.getElementById('search-results'),
+    gitBranch: document.getElementById('git-branch'), gitFiles: document.getElementById('git-files'), diff: document.getElementById('diff'),
+  };
+  let wsState = { list: [], currentPath: '', currentSessionId: null };
+  let selectedRoot = '';   // '' = follow current session cwd
+  const expanded = new Set();
+  let previewEntry = null;
+
+  function applyLang() {
+    document.querySelectorAll('[data-i18n]').forEach((el) => {
+      const k = el.dataset.i18n;
+      if (d()[k]) el.textContent = d()[k];
+    });
+  }
+
+  function fmtTokens(t) {
+    if (!t) return d().noSession;
+    const k = (n) => (n >= 1e6 ? (n / 1e6).toFixed(1) + 'M' : n >= 1e3 ? (n / 1e3).toFixed(1) + 'k' : String(n));
+    return `in ${k(t.uncachedInputTokens)} · cache ${k(t.cacheReadTokens)} · out ${k(t.outputTokens)}`;
+  }
+
+  function activeRoot() {
+    if (selectedRoot) return selectedRoot;
+    return wsState.currentPath || '';
+  }
+
+  function markerFor(entry) {
+    // Same rule as the plugin: relative when the panel root IS the session
+    // cwd, absolute otherwise (the model resolves both via its read tool).
+    return activeRoot() === wsState.currentPath ? `[file: ${entry.rel}]` : `[file: ${entry.path}]`;
+  }
+
+  function renderWsOptions() {
+    const sel = els.ws;
+    sel.innerHTML = '';
+    if (wsState.currentPath) {
+      const o = document.createElement('option');
+      o.value = '';
+      o.textContent = '▸ ' + (wsState.currentPath.split('/').filter(Boolean).pop() || wsState.currentPath) + ' （当前会话）';
+      sel.appendChild(o);
+    }
+    for (const w of wsState.list) {
+      const o = document.createElement('option');
+      o.value = w.path;
+      o.textContent = w.title + ' — ' + w.path;
+      if (w.path === selectedRoot) o.selected = true;
+      sel.appendChild(o);
+    }
+  }
+
+  async function loadDir(rel) {
+    const root = activeRoot();
+    if (!root) { els.tree.innerHTML = `<div class="empty">${d().noWs}</div>`; return; }
+    const res = await window.desktop.wsList(root, rel);
+    if (!res || !res.ok) { els.tree.innerHTML = `<div class="empty">${(res && res.error) || '—'}</div>`; return; }
+    if (rel === '') {
+      els.tree.textContent = '';
+      for (const e of res.entries) els.tree.appendChild(nodeEl(e, 0));
+      if (!res.entries.length) els.tree.innerHTML = `<div class="empty">${d().emptyDir}</div>`;
+      if (res.truncated) els.tree.insertAdjacentHTML('beforeend', `<div class="trunc">${d().truncated}</div>`);
+    }
+    return res;
+  }
+
+  const ICONS = { js: '🟨', mjs: '🟨', ts: '🟦', json: '🟪', md: '📝', py: '🐍', sh: '🐚', html: '🌐', css: '🎨', png: '🖼️', jpg: '🖼️', gif: '🖼️', svg: '🖼️', rs: '🦀', go: '🐹', c: '🔧', h: '🔧', cpp: '🔧', yml: '⚙️', yaml: '⚙️', toml: '⚙️', lock: '🔒' };
+
+  function nodeEl(entry, depth) {
+    const div = document.createElement('div');
+    const isDir = entry.type === 'directory';
+    div.className = 'node ' + (isDir ? 'dir' : 'file');
+    div.style.setProperty('--d', depth);
+    const tw = document.createElement('span');
+    tw.className = 'tw';
+    tw.textContent = isDir ? (expanded.has(entry.rel) ? '▾' : '▸') : (ICONS[(entry.name.split('.').pop() || '').toLowerCase()] || '📄');
+    div.appendChild(tw);
+    const nm = document.createElement('span');
+    nm.className = 'nm';
+    nm.textContent = entry.name;
+    div.appendChild(nm);
+    div.title = `${entry.path}\n${d().clickHint}`;
+    if (isDir) {
+      div.addEventListener('click', async () => {
+        const kids = div.nextElementSibling;
+        if (expanded.has(entry.rel)) {
+          expanded.delete(entry.rel);
+          tw.textContent = '▸';
+          if (kids && kids.dataset.sub === entry.rel) kids.remove();
+        } else {
+          expanded.add(entry.rel);
+          tw.textContent = '▾';
+          const sub = document.createElement('div');
+          sub.dataset.sub = entry.rel;
+          const res = await loadDirSub(entry.rel);
+          if (res && res.ok) {
+            for (const e of res.entries) sub.appendChild(nodeEl(e, depth + 1));
+            if (res.truncated) sub.insertAdjacentHTML('beforeend', `<div class="trunc">${d().truncated}</div>`);
+            if (!res.entries.length) sub.innerHTML = `<div class="empty">${d().emptyDir}</div>`;
+          } else {
+            sub.innerHTML = `<div class="empty">${(res && res.error) || '—'}</div>`;
+          }
+          if (kids && kids.dataset.sub === entry.rel) kids.replaceWith(sub);
+          else div.after(sub);
+        }
+      });
+    } else {
+      div.addEventListener('click', () => { window.desktop.insertComposer(markerFor(entry)); });
+      div.addEventListener('dblclick', () => openPreview(entry));
+    }
+    return div;
+  }
+
+  async function loadDirSub(rel) {
+    const root = activeRoot();
+    if (!root) return null;
+    return window.desktop.wsList(root, rel);
+  }
+
+  async function openPreview(entry) {
+    previewEntry = entry;
+    els.preview.hidden = false;
+    els.pvTitle.textContent = entry.name;
+    els.pvBody.textContent = '…';
+    const res = await window.desktop.wsPeek(entry.path);
+    if (!res || !res.ok) { els.pvBody.textContent = (res && res.error) || '—'; return; }
+    if (res.tooLarge) { els.pvBody.textContent = d().tooLarge; return; }
+    if (res.binary) { els.pvBody.textContent = d().binary; return; }
+    els.pvBody.textContent = res.content + (res.truncatedLines ? '\n…' : '');
+  }
+
+  // ---- stats strip: existing balance pipeline + official tokenUsage ----
+  async function refreshStats() {
+    const s = await window.desktop.statsGet();
+    if (!s) return;
+    els.tok.textContent = fmtTokens(s.tokens);
+    els.cost.textContent = s.sessionCost == null ? '—' : `¥${Number(s.sessionCost).toFixed(2)}`;
+    els.turn.textContent = s.turnCost == null ? '—' : `¥${Number(s.turnCost).toFixed(2)}`;
+  }
+
+  async function refreshWsState() {
+    const st = await window.desktop.wsState();
+    if (st) wsState = st;
+    renderWsOptions();
+    expanded.clear();
+    els.preview.hidden = true;
+    await loadDir('');
+  }
+
+  // ---- tabs ----
+  function setTab(name) {
+    for (const t of ['files', 'search', 'git']) {
+      document.getElementById('tab-' + t).classList.toggle('active', t === name);
+      document.getElementById('page-' + t).classList.toggle('active', t === name);
+    }
+    if (name === 'git') refreshGit();
+    if (name === 'search') els.searchQ.focus();
+  }
+  document.getElementById('tab-files').addEventListener('click', () => setTab('files'));
+  document.getElementById('tab-search').addEventListener('click', () => setTab('search'));
+  document.getElementById('tab-git').addEventListener('click', () => setTab('git'));
+
+  // ---- workspace content search (main-process walk) ----
+  let searchTimer = null;
+  let searchSeq = 0;
+  async function runSearch() {
+    const q = els.searchQ.value.trim();
+    const root = activeRoot();
+    if (!q || !root) { els.searchResults.innerHTML = `<div class="empty">${d().noResults}</div>`; return; }
+    els.searchResults.innerHTML = `<div class="empty">${d().searching}</div>`;
+    const seq = ++searchSeq;
+    const r = await window.desktop.wsSearch(root, q);
+    if (seq !== searchSeq) return;
+    els.searchResults.textContent = '';
+    if (!r || !r.ok || !r.results.length) { els.searchResults.innerHTML = `<div class="empty">${(r && r.error) || d().noResults}</div>`; return; }
+    for (const hit of r.results) {
+      const div = document.createElement('div');
+      div.className = 'hit';
+      const where = document.createElement('div');
+      where.className = 'where';
+      where.textContent = `${hit.rel}:${hit.line}`;
+      div.appendChild(where);
+      const what = document.createElement('div');
+      what.className = 'what';
+      what.textContent = hit.text;
+      div.appendChild(what);
+      div.addEventListener('click', () => openPreview({ name: hit.rel.split('/').pop(), path: hit.path, rel: hit.rel, type: 'file' }));
+      els.searchResults.appendChild(div);
+    }
+  }
+  els.searchQ.addEventListener('input', () => { clearTimeout(searchTimer); searchTimer = setTimeout(runSearch, 250); });
+
+  // ---- git review (read-only status + diff) ----
+  async function refreshGit() {
+    const root = activeRoot();
+    els.gitBranch.textContent = '…';
+    els.gitFiles.textContent = '';
+    els.diff.textContent = '';
+    if (!root) { els.gitBranch.textContent = d().gitNone; return; }
+    const r = await window.desktop.wsGit(root);
+    if (!r || !r.ok) { els.gitBranch.textContent = d().gitNone; return; }
+    els.gitBranch.textContent = r.branch + (r.files.length ? ` · ${r.files.length}` : ` ${d().gitClean}`);
+    for (const f of r.files) {
+      const div = document.createElement('div');
+      div.className = 'gfile';
+      const st = document.createElement('span');
+      st.className = 'st ' + (f.status ? f.status[0] : '?');
+      st.textContent = f.status || '?';
+      div.appendChild(st);
+      const p = document.createElement('span');
+      p.className = 'path';
+      p.textContent = f.path;
+      div.appendChild(p);
+      const abs = f.path;
+      div.addEventListener('click', () => openPreview({ name: abs.split('/').pop(), path: root + '/' + abs, rel: abs, type: 'file' }));
+      els.gitFiles.appendChild(div);
+    }
+    els.diff.textContent = r.diff || '';
+  }
+  document.getElementById('git-refresh').addEventListener('click', refreshGit);
+
+  els.ws.addEventListener('change', () => { selectedRoot = els.ws.value; expanded.clear(); loadDir(''); });
+  document.getElementById('btn-refresh').addEventListener('click', () => { refreshWsState(); refreshStats(); });
+  document.getElementById('btn-opendir').addEventListener('click', () => {
+    const root = activeRoot();
+    if (root) window.desktop.openExternalPath(root);
+  });
+  document.getElementById('btn-close').addEventListener('click', () => window.desktop.toggleFilesPanel(false));
+  document.getElementById('pv-close').addEventListener('click', () => { els.preview.hidden = true; });
+  document.getElementById('pv-insert').addEventListener('click', () => {
+    if (previewEntry) window.desktop.insertComposer(markerFor(previewEntry));
+  });
+
+  (async () => {
+    const st = await window.desktop.getState();
+    lang = (st && st.language) || 'zh';
+    applyLang();
+    await refreshWsState();
+    refreshStats();
+    setInterval(refreshStats, 3000);
+    setInterval(refreshWsState, 15000);
+  })();
+</script>
+</body>
+</html>

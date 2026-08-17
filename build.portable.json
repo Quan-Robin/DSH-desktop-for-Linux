@@ -3,6 +3,7 @@
   "productName": "DeepSeek Harness",
   "files": [
     "src/**/*",
+    "plugin/**/*",
     "assets/**/*",
     "package.json"
   ],

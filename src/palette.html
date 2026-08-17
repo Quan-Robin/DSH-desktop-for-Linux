@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>DeepSeek Harness — Palette</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { margin: 0; font: 13px/1.5 system-ui, "Noto Sans CJK SC", sans-serif; display: flex; flex-direction: column; height: 100vh; }
+  #bar { display: flex; gap: 6px; padding: 10px; border-bottom: 1px solid rgba(128,128,128,.25); }
+  #q { flex: 1; font: inherit; border: 1px solid rgba(128,128,128,.4); border-radius: 7px; padding: 6px 10px; background: transparent; color: inherit; outline: none; }
+  #q:focus { border-color: #4d6bfe; }
+  .tab { padding: 4px 12px; border-radius: 6px; border: 1px solid rgba(128,128,128,.4); background: transparent; color: inherit; cursor: pointer; font: inherit; }
+  .tab.active { background: #4d6bfe; border-color: #4d6bfe; color: #fff; }
+  #list { flex: 1; overflow: auto; padding: 6px; }
+  .item { padding: 6px 10px; border-radius: 7px; cursor: pointer; display: flex; align-items: center; gap: 8px; }
+  .item:hover, .item.sel { background: rgba(77,107,254,.15); }
+  .item .t { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .item .meta { color: rgba(128,128,128,1); font-size: 11px; font-variant-numeric: tabular-nums; }
+  .dot { color: #4d6bfe; font-weight: 700; }
+  .sub { color: rgba(128,128,128,1); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 45%; }
+  .empty { padding: 20px; text-align: center; color: rgba(128,128,128,1); }
+  mark { background: rgba(77,107,254,.3); color: inherit; border-radius: 2px; }
+</style>
+</head>
+<body>
+<div id="bar">
+  <button class="tab active" id="tab-sessions">会话</button>
+  <button class="tab" id="tab-search">全文搜索</button>
+  <input id="q" placeholder="" spellcheck="false" autofocus>
+</div>
+<div id="list"></div>
+<script>
+  const DICT = {
+    zh: { sessions: '会话', search: '全文搜索', phS: '模糊搜索会话…', phF: '搜索全部会话内容…', empty: '（无结果）', searching: '搜索中…', dot: '●', cur: '当前' },
+    en: { sessions: 'Sessions', search: 'Search', phS: 'fuzzy-search sessions…', phF: 'search all session transcripts…', empty: '(no results)', searching: 'searching…', dot: '●', cur: 'current' },
+  };
+  let lang = 'zh';
+  const d = () => DICT[lang] || DICT.zh;
+
+  const els = { q: document.getElementById('q'), list: document.getElementById('list') };
+  let mode = 'sessions';
+  let items = [];       // sessions mode rows
+  let results = [];     // search mode rows
+  let sel = 0;
+  let searchSeq = 0;
+  let debounce = null;
+
+  // Subsequence fuzzy match — returns matched index list for highlighting.
+  function fuzzy(query, text) {
+    const q = query.toLowerCase(), t = (text || '').toLowerCase();
+    const hits = [];
+    let ti = 0;
+    for (const ch of q) {
+      if (ch === ' ') continue;
+      const found = t.indexOf(ch, ti);
+      if (found < 0) return null;
+      hits.push(found);
+      ti = found + 1;
+    }
+    return hits;
+  }
+
+  function renderSessions() {
+    const query = els.q.value.trim();
+    const rows = query
+      ? items.map((s) => ({ s, hits: fuzzy(query, s.title || s.id) })).filter((r) => r.hits)
+      : items.map((s) => ({ s, hits: [] }));
+    if (sel >= rows.length) sel = Math.max(0, rows.length - 1);
+    els.list.textContent = '';
+    if (!rows.length) { els.list.innerHTML = `<div class="empty">${d().empty}</div>`; return; }
+    rows.forEach((r, i) => {
+      const div = document.createElement('div');
+      div.className = 'item' + (i === sel ? ' sel' : '');
+      if (r.s.unread) {
+        const dot = document.createElement('span');
+        dot.className = 'dot';
+        dot.textContent = d().dot;
+        dot.title = 'unread activity';
+        div.appendChild(dot);
+      }
+      const t = document.createElement('span');
+      t.className = 't';
+      t.textContent = (r.s.title || r.s.id.slice(0, 20)) + (r.s.current ? ` （${d().cur}）` : '');
+      div.appendChild(t);
+      const meta = document.createElement('span');
+      meta.className = 'meta';
+      meta.textContent = `¥${Number(r.s.cost || 0).toFixed(2)}`;
+      div.appendChild(meta);
+      div.addEventListener('click', () => window.desktop.paletteOpen(r.s.id));
+      els.list.appendChild(div);
+    });
+  }
+
+  function renderSearch() {
+    els.list.textContent = '';
+    if (!results.length) { els.list.innerHTML = `<div class="empty">${searching ? d().searching : d().empty}</div>`; return; }
+    results.forEach((r) => {
+      const div = document.createElement('div');
+      div.className = 'item';
+      const t = document.createElement('span');
+      t.className = 't';
+      t.textContent = (r.title || r.sessionId.slice(0, 16));
+      div.appendChild(t);
+      const sub = document.createElement('span');
+      sub.className = 'sub';
+      sub.textContent = r.snippet;
+      div.appendChild(sub);
+      div.addEventListener('click', () => window.desktop.paletteOpen(r.sessionId));
+      els.list.appendChild(div);
+    });
+  }
+
+  let searching = false;
+  async function runSearch() {
+    const q = els.q.value.trim();
+    if (!q) { results = []; searching = false; renderSearch(); return; }
+    searching = true;
+    renderSearch();
+    const seq = ++searchSeq;
+    const r = await window.desktop.sessionSearch(q);
+    if (seq !== searchSeq) return; // stale
+    searching = false;
+    // enrich with titles
+    const sessions = await window.desktop.paletteSessions();
+    const byId = new Map(sessions.map((s) => [s.id, s.title]));
+    results = (r || []).map((x) => ({ ...x, title: byId.get(x.sessionId) || null }));
+    renderSearch();
+  }
+
+  function setMode(m) {
+    mode = m;
+    document.getElementById('tab-sessions').className = 'tab' + (m === 'sessions' ? ' active' : '');
+    document.getElementById('tab-search').className = 'tab' + (m === 'search' ? ' active' : '');
+    els.q.placeholder = m === 'sessions' ? d().phS : d().phF;
+    els.q.value = '';
+    sel = 0;
+    if (m === 'sessions') renderSessions();
+    else { results = []; renderSearch(); }
+    els.q.focus();
+  }
+
+  document.getElementById('tab-sessions').addEventListener('click', () => setMode('sessions'));
+  document.getElementById('tab-search').addEventListener('click', () => setMode('search'));
+
+  els.q.addEventListener('input', () => {
+    if (mode === 'sessions') { sel = 0; renderSessions(); return; }
+    clearTimeout(debounce);
+    debounce = setTimeout(runSearch, 300);
+  });
+  els.q.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') { window.desktop.paletteOpen(''); } // empty id: just hides the palette
+    else if (e.key === 'Enter') {
+      if (mode === 'sessions') {
+        const query = els.q.value.trim();
+        const rows = query ? items.filter((s) => fuzzy(query, s.title || s.id)) : items;
+        if (rows[sel]) window.desktop.paletteOpen(rows[sel].id);
+      } else if (results[sel]) {
+        window.desktop.paletteOpen(results[sel].sessionId);
+      }
+    } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      sel = Math.max(0, sel + (e.key === 'ArrowDown' ? 1 : -1));
+      if (mode === 'sessions') renderSessions();
+      else renderSearch();
+    }
+  });
+
+  async function refreshSessions() {
+    items = (await window.desktop.paletteSessions()) || [];
+    renderSessions();
+  }
+
+  window.desktop.onPaletteMode((m) => { setMode(m === 'search' ? 'search' : 'sessions'); refreshSessions(); });
+  (async () => {
+    const s = await window.desktop.getState();
+    lang = (s && s.language) || 'zh';
+    setMode('sessions');
+    await refreshSessions();
+  })();
+</script>
+</body>
+</html>

@@ -18,15 +18,23 @@
     "start": "electron .",
     "dist": "electron-builder --linux",
     "dist:portable": "electron-builder --linux dir --config build.portable.json && bash scripts/package-portable.sh",
-    "bundle": "bash scripts/download-bundled.sh"
+    "bundle": "bash scripts/download-bundled.sh",
+    "test": "node test/desktop-utils.test.mjs && node test/ws-tree.test.mjs && node test/session-menu.test.mjs && node test/shell-bridge.test.mjs && node plugin/dsh-plugin-desktop/test/run.mjs"
   },
   "build": {
     "appId": "com.quanrobin.dsh-desktop",
     "productName": "DeepSeek Harness",
     "files": [
       "src/**/*",
+      "plugin/**/*",
       "assets/**/*",
       "package.json"
+    ],
+    "protocols": [
+      {
+        "name": "DeepSeek Harness deep link",
+        "schemes": ["dsh"]
+      }
     ],
     "directories": {
       "output": "dist"

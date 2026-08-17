@@ -8,7 +8,7 @@
 //   3. Manage a tray icon: show/hide window, open in browser, quit (kills dsh).
 //   4. Persist a small config in the userData directory.
 
-const { app, BrowserWindow, WebContentsView, Tray, Menu, Notification, dialog, shell, nativeImage, ipcMain } = require('electron');
+const { app, BrowserWindow, WebContentsView, Tray, Menu, Notification, dialog, shell, nativeImage, ipcMain, globalShortcut, screen } = require('electron');
 const { autoUpdater } = require('electron-updater');
 const { spawn, execFile } = require('node:child_process');
 const fs = require('node:fs');
@@ -28,6 +28,8 @@ function isolatePortableUserData() {
   } catch { return false; }
 }
 const path = require('node:path');
+const { deepLinkFromArgv, clampWindowState, migrateProfiles, applyProfile, togglePin } = require('./desktop-utils');
+const wsTree = require('./ws-tree');
 
 const DEFAULT_PORT = 3080;
 const DSH_PACKAGE = '@deepseek-ai/dsh';
@@ -73,6 +75,19 @@ const I18N = {
     pluginDisabledTitle: '插件已禁用', pluginDisabledBody: '插件 {id} 已禁用，正在重启服务…',
     bundledMissingTitle: '便携运行时缺失', bundledMissingBody: '未找到内置运行时（bundled），已自动回退到 npx 模式启动 dsh。',
     turnDoneTitle: 'DeepSeek Harness', turnDoneBody: '本轮对话已完成',
+    quickInputTitle: '快捷输入 — DeepSeek Harness',
+    quickNoSession: '当前没有活跃会话（在 Web UI 中打开一个会话后再试）',
+    quickRpcUnavailable: '此 dsh 版本不支持发送接口，已聚焦主窗口',
+    quickSendFail: '发送失败：{err}',
+    pluginMenu: '伴生插件', pluginInstall: '安装伴生插件（推荐）', pluginInstalled: '伴生插件已安装',
+    pluginInstalling: '正在安装伴生插件…', pluginInstallDone: '伴生插件已安装，正在重启服务…',
+    pluginInstallFail: '伴生插件安装失败：{err}',
+    profilesMenu: '配置', profileAddFail: '添加配置失败：{err}',
+    trayPins: '置顶的会话', noPins: '（暂无，右键会话可置顶）',
+    filesPanel: '文件面板（Ctrl+Shift+E）', composerMiss: '未找到输入框——请先打开一个会话',
+    approvalTitle: 'DSH 等待审批',
+    profileSwitched: '已切换到配置「{name}」，正在重启服务…',
+    pluginStatusOn: '已连接', pluginStatusOff: '未安装（功能受限）',
     loadingTitle: '正在启动 DeepSeek Harness…',
     loadingHint: '首次运行会通过 npx 下载 dsh 包，可能需要几分钟，请稍候。',
     fatalTitle: 'DeepSeek Harness 启动失败',
@@ -134,6 +149,19 @@ const I18N = {
     pluginDisabledTitle: 'Plugin disabled', pluginDisabledBody: 'Plugin {id} disabled — restarting the service…',
     bundledMissingTitle: 'Portable runtime missing', bundledMissingBody: 'No bundled runtime found — fell back to npx mode to start dsh.',
     turnDoneTitle: 'DeepSeek Harness', turnDoneBody: 'The last turn has finished',
+    quickInputTitle: 'Quick Input — DeepSeek Harness',
+    quickNoSession: 'No active session (open one in the Web UI first)',
+    quickRpcUnavailable: 'This dsh build has no send API — focused the main window instead',
+    quickSendFail: 'Send failed: {err}',
+    pluginMenu: 'Companion plugin', pluginInstall: 'Install companion plugin (recommended)', pluginInstalled: 'Companion plugin installed',
+    pluginInstalling: 'Installing companion plugin…', pluginInstallDone: 'Companion plugin installed — restarting service…',
+    pluginInstallFail: 'Companion plugin installation failed: {err}',
+    profilesMenu: 'Profiles', profileAddFail: 'Failed to add profile: {err}',
+    trayPins: 'Pinned sessions', noPins: '(none yet — right-click a session to pin)',
+    filesPanel: 'Files panel (Ctrl+Shift+E)', composerMiss: 'Composer not found — open a session first',
+    approvalTitle: 'DSH is waiting for approval',
+    profileSwitched: 'Switched to profile "{name}" — restarting service…',
+    pluginStatusOn: 'Connected', pluginStatusOff: 'Not installed (limited features)',
     loadingTitle: 'Starting DeepSeek Harness…',
     loadingHint: 'The first run downloads the dsh package via npx; this can take a few minutes.',
     fatalTitle: 'DeepSeek Harness failed to start',
@@ -189,9 +217,24 @@ const DEFAULTS = {
   // Manual "current session" override (full session id) picked in the balance
   // details page; empty = follow the server's last-active session.
   balanceSessionId: '',
+  // True when balanceSessionId was set by an explicit user action (balance
+  // page / deep link) — sniffed ids must NOT outrank the companion plugin.
+  balanceSessionIdManual: false,
   // dsh data home; empty = ~/.dsh. Portable mode points this next to the app
   // (config.dshCommand 'bundled' ships its own node/dsh/pnpm).
   dshHome: '',
+  // Global quick input (mini composer on a system-wide hotkey).
+  quickInputEnabled: true,
+  quickInputShortcut: 'Control+Shift+D',
+  // Window bounds across restarts; null = defaults.
+  windowState: null,
+  // Multi-profile: [{ name, dshHome, port }] + activeProfile (migrated on load).
+  profiles: null,
+  activeProfile: '',
+  // Pinned sessions (desktop-owned state): [{ id, title }], newest first.
+  pinnedSessions: [],
+  // Right-dock files panel (workspace browser) restored on boot.
+  filesPanelOpen: false,
 };
 
 let config = null;
@@ -212,9 +255,11 @@ function loadConfig() {
     // Legacy: pre-0.1.12 used onClose; migrate it into closeBehavior.
     if (loaded.onClose && !loaded.closeBehavior) loaded.closeBehavior = loaded.onClose;
     delete loaded.onClose;
-    return { ...DEFAULTS, ...loaded };
+    const merged = { ...DEFAULTS, ...loaded };
+    migrateProfiles(merged); // ensures profiles/activeProfile exist & valid
+    return merged;
   } catch {
-    return { ...DEFAULTS };
+    return migrateProfiles({ ...DEFAULTS });
   }
 }
 
@@ -604,18 +649,52 @@ function fatalPage(message) {
 // ---------- window ----------
 
 function createWindow() {
+  const workAreas = screen.getAllDisplays().map((d) => d.workArea);
+  const ws = clampWindowState(config.windowState, workAreas, { x: undefined, y: undefined, width: 1280, height: 820 });
   win = new BrowserWindow({
-    width: 1280,
-    height: 820,
+    width: ws.width,
+    height: ws.height,
+    ...(ws.x !== undefined && ws.y !== undefined ? { x: ws.x, y: ws.y } : {}),
     minWidth: 720,
     minHeight: 480,
     title: 'DeepSeek Harness',
     icon: nativeImage.createFromPath(ICON_PATH),
     webPreferences: {
+      preload: path.join(__dirname, 'webview-preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
     },
+  });
+  if (ws.maximized) win.maximize();
+
+  // Inject the in-page session menu/pins whenever the dsh UI (re)loads. The
+  // script self-guards against double injection and retries __ModuleLoader__
+  // on its own; runs only for the app origin (the loading page is a data: URL).
+  const injectIfAppOrigin = () => {
+    try {
+      const u = new URL(win.webContents.getURL());
+      if (u.origin === new URL(appUrl()).origin) injectSessionMenu();
+    } catch { /* not a URL yet */ }
+  };
+  win.webContents.on('did-finish-load', injectIfAppOrigin);
+  win.webContents.on('did-navigate', injectIfAppOrigin);
+
+  // Persist bounds (debounced) so the window reopens where the user left it.
+  let boundsTimer = null;
+  const saveBounds = () => {
+    if (!win || win.isDestroyed() || win.isMinimized() || win.isMaximized()) return;
+    config.windowState = { ...win.getBounds(), maximized: false };
+    clearTimeout(boundsTimer);
+    boundsTimer = setTimeout(saveConfig, 500);
+  };
+  win.on('resize', saveBounds);
+  win.on('move', saveBounds);
+  win.on('close', () => {
+    if (win && !win.isDestroyed()) {
+      config.windowState = { ...win.getBounds(), maximized: win.isMaximized() };
+      saveConfig();
+    }
   });
 
   // Keep navigation inside the local dsh server; open everything else in the system browser.
@@ -623,6 +702,14 @@ function createWindow() {
   win.webContents.on('will-navigate', (event, url) => {
     try {
       const u = new URL(url);
+      // File drops that the page does not handle navigate to file:// — route
+      // them into the quick input as attachment paths instead of launching
+      // the system file manager (the old shell.openExternal behavior).
+      if (u.protocol === 'file:') {
+        event.preventDefault();
+        prefillQuickInput([u.pathname.replace(/^\/([A-Za-z]:)/, '$1')]);
+        return;
+      }
       if (u.protocol !== 'http:' || u.host !== allowedHost) {
         event.preventDefault();
         shell.openExternal(url);
@@ -644,6 +731,7 @@ function createWindow() {
   // Keep the settings overlay centered when the main window is resized.
   win.on('resize', () => {
     if (overlayView && !win.isDestroyed()) overlayView.setBounds(centeredOverlayBounds());
+    layoutFilesPanel();
   });
 
   // A page reload drops injected CSS — re-apply the mask if the overlay is open.
@@ -662,12 +750,14 @@ function createWindow() {
     // (the frontend may use different RPCs depending on its cache state).
     ses.webRequest.onBeforeRequest({ urls: ['http://127.0.0.1:*/api/session.*'] }, (details, callback) => {
       try {
+        if (pluginAvailable === true) { callback({}); return; } // /api/state replaces the sniff
         const raw = details.uploadData && details.uploadData[0] && details.uploadData[0].bytes;
         if (raw) {
           const body = JSON.parse(Buffer.from(raw).toString('utf8'));
           const sid = body && body.payload && body.payload.sessionId;
           if (typeof sid === 'string' && sid.startsWith('session-')) {
             config.balanceSessionId = sid;
+            config.balanceSessionIdManual = false;
             saveConfig();
             refreshBalance();
           }
@@ -720,8 +810,9 @@ function createWindow() {
     else if (choice === 1) { config.closeBehavior = 'quit'; saveConfig(); quitting = true; app.quit(); }
     else { config.closeBehavior = 'ask'; saveConfig(); win.hide(); } // this time: tray default
   });
-  win.on('closed', () => { win = null; maskCssKey = null; });
+  win.on('closed', () => { win = null; maskCssKey = null; filesView = null; });
 
+  if (config.filesPanelOpen === true) toggleFilesPanel(true);
   return win;
 }
 
@@ -1002,6 +1093,407 @@ function updateDsh() {
 const { createSniTray } = require('./sni');
 const balanceApi = require('./balance');
 
+// ---------- companion plugin (dsh-plugin-desktop) ----------
+// Preferred source for current-session state and realtime usage; when absent
+// everything falls back to the legacy paths (webRequest sniff + local scan).
+
+let pluginAvailable = null; // null = unknown, true/false after first probe
+
+async function probePlugin(force) {
+  if (pluginAvailable !== null && !force) return pluginAvailable;
+  try {
+    await balanceApi.fetchPluginState(config.port);
+    pluginAvailable = true;
+  } catch {
+    pluginAvailable = false;
+  }
+  return pluginAvailable;
+}
+
+// Copy the bundled plugin into the profile's node_modules and register it in
+// cordis.patch.yml (same recovery path disableDshPlugin uses). Zero npm deps,
+// so a plain directory copy is a complete install.
+function installDesktopPlugin() {
+  const src = [process.resourcesPath, path.join(__dirname, '..')]
+    .filter(Boolean)
+    .map((root) => path.join(root, 'plugin', 'dsh-plugin-desktop'))
+    .find((p) => fs.existsSync(path.join(p, 'lib', 'index.js')));
+  if (!src) {
+    notify(t('pluginInstallFail', { err: 'plugin sources not found in the app bundle' }));
+    return false;
+  }
+  const profileRoot = path.join(balanceApi.getDshHome(), 'profiles', 'web');
+  const dest = path.join(profileRoot, 'node_modules', 'dsh-plugin-desktop');
+  try {
+    fs.mkdirSync(path.dirname(dest), { recursive: true });
+    fs.rmSync(dest, { recursive: true, force: true });
+    fs.cpSync(src, dest, { recursive: true });
+    // Register in the loader patch — append `- include: dsh-plugin-desktop`
+    // unless an entry is already there.
+    const patch = path.join(profileRoot, 'cordis.patch.yml');
+    let text = '';
+    try { text = fs.readFileSync(patch, 'utf8'); } catch { text = '[]\n'; }
+    if (!/dsh-plugin-desktop/.test(text)) {
+      if (/^\[\]\s*$/m.test(text)) text = text.replace(/^\[\]\s*$/m, '- include: dsh-plugin-desktop');
+      else text = text.replace(/\s*$/, '\n') + '- include: dsh-plugin-desktop\n';
+      fs.writeFileSync(patch, text);
+    }
+    return true;
+  } catch (e) {
+    notify(t('pluginInstallFail', { err: e.message }));
+    return false;
+  }
+}
+
+function installPluginAndRestart() {
+  notify('DeepSeek Harness', t('pluginInstalling'));
+  if (installDesktopPlugin()) {
+    pluginAvailable = null; // re-probe after restart
+    notify('DeepSeek Harness', t('pluginInstallDone'));
+    restartDsh();
+  }
+}
+
+// ---------- in-page session menu & pinned sessions ----------
+// The context menu + pinned section run INSIDE the dsh web page (page world,
+// via __ModuleLoader__, same contract as community plugins) but are injected
+// by the shell — no dsh plugin install needed. Pin state lives in the
+// desktop config and travels to the page through webview-preload.js.
+
+let sessionMenuJs = null;
+function injectSessionMenu() {
+  if (!win || win.isDestroyed()) return;
+  try {
+    if (!sessionMenuJs) {
+      // Both in-page modules: context menu/pins + shell bridge (composer
+      // insert, workspace report, files-panel toggle button).
+      sessionMenuJs = ['session-menu.js', 'shell-bridge.js']
+        .map((f) => fs.readFileSync(path.join(__dirname, 'inject', f), 'utf8'))
+        .join('\n;\n');
+    }
+    win.webContents.executeJavaScript(sessionMenuJs, true).catch((e) => {
+      console.error('[inject] session menu failed:', e.message);
+    });
+  } catch (e) {
+    console.error('[inject] cannot read session-menu.js:', e.message);
+  }
+}
+
+function sendPinsToPage() {
+  if (win && !win.isDestroyed()) win.webContents.send('pins-changed', config.pinnedSessions || []);
+}
+
+function registerPinIpc() {
+  // The page announces itself (mailbox bridge is up) — answer with the pins.
+  ipcMain.on('pins:hello', () => sendPinsToPage());
+  ipcMain.on('pins:toggle', (_e, session) => {
+    if (!session || typeof session.id !== 'string') return;
+    config.pinnedSessions = togglePin(config.pinnedSessions, session);
+    saveConfig();
+    sendPinsToPage();
+    applyMenus(); // tray pinned list follows
+  });
+  ipcMain.handle('pins:get', () => config.pinnedSessions || []);
+}
+
+// Jump to a pinned session from the tray: show the window, tell the page.
+function jumpToSession(id) {
+  if (!id) return;
+  if (win && !win.isDestroyed()) {
+    win.show();
+    win.focus();
+    win.webContents.send('jump', id);
+  }
+}
+
+// ---------- right-dock files panel (workspace browser + stats) ----------
+// Native replication of dsh-workspace-explorer (MIT): lazy tree, [file: path]
+// references, open-in-file-manager, 60-line preview — plus a stats strip fed
+// by the EXISTING balance pipeline (sessionCost/turnCost) and the official
+// session.list tokenUsage.
+
+let filesView = null;
+let workspaceState = { list: [], currentPath: '', currentSessionId: null };
+const FILES_PANEL_W = 280;
+
+function layoutFilesPanel() {
+  if (!win || win.isDestroyed()) return;
+  const [w, h] = win.getContentSize();
+  try {
+    const main = win.contentView.children.find((c) => c.webContents === win.webContents);
+    if (main) main.setBounds({ x: 0, y: 0, width: filesView ? Math.max(200, w - FILES_PANEL_W) : w, height: h });
+  } catch { /* older Electron: panel overlays the page instead of resizing it */ }
+  if (filesView) filesView.setBounds({ x: Math.max(200, w - FILES_PANEL_W), y: 0, width: FILES_PANEL_W, height: h });
+}
+
+function toggleFilesPanel(on) {
+  const want = on === undefined ? !filesView : !!on;
+  if (want && !filesView && win && !win.isDestroyed()) {
+    filesView = new WebContentsView({
+      webPreferences: {
+        preload: path.join(__dirname, 'preload.js'),
+        contextIsolation: true,
+        nodeIntegration: false,
+        sandbox: true,
+      },
+    });
+    win.contentView.addChildView(filesView);
+    filesView.webContents.loadFile(path.join(__dirname, 'files-panel.html'));
+  } else if (!want && filesView) {
+    try {
+      if (win && !win.isDestroyed()) win.contentView.removeChildView(filesView);
+      filesView.webContents.close();
+    } catch { /* already gone */ }
+    filesView = null;
+  }
+  if ((config.filesPanelOpen === true) !== !!filesView) {
+    config.filesPanelOpen = !!filesView;
+    saveConfig();
+  }
+  layoutFilesPanel();
+}
+
+function sendToPage(kind, payload) {
+  if (win && !win.isDestroyed()) {
+    // Rides the same mailbox protocol as pins/jump (see webview-preload.js).
+    if (kind === 'insert-composer') win.webContents.send('insert', payload);
+  }
+}
+
+function registerFilesIpc() {
+  ipcMain.on('ws:report', (_e, snap) => {
+    if (snap && Array.isArray(snap.list)) workspaceState = snap;
+  });
+  ipcMain.on('panel:toggle', () => toggleFilesPanel());
+  ipcMain.on('composer:miss', () => {
+    notify('DeepSeek Harness', t('composerMiss'));
+  });
+  ipcMain.handle('files:toggle', (_e, on) => { toggleFilesPanel(on === undefined ? undefined : !!on); return !!filesView; });
+  ipcMain.handle('ws:list', (_e, a) => wsTree.wsList(String(a && a.root || ''), String(a && a.rel || '')));
+  ipcMain.handle('ws:peek', (_e, a) => wsTree.wsPeek(String(a && a.path || '')));
+  ipcMain.handle('ws:state', () => workspaceState);
+  ipcMain.handle('stats:get', () => ({
+    tokens: balanceState.currentTokens || null,
+    sessionCost: balanceState.sessionCost,
+    turnCost: balanceState.turnCost,
+    currentId: balanceState.currentId,
+  }));
+  ipcMain.handle('insert:composer', (_e, text) => {
+    if (typeof text !== 'string' || !text) return false;
+    if (win && !win.isDestroyed()) {
+      sendToPage('insert-composer', { text });
+      return true;
+    }
+    return false;
+  });
+  ipcMain.handle('open:external-path', (_e, p) => {
+    if (typeof p !== 'string' || !p || !fs.existsSync(p)) return false;
+    // Only directories that were reported by the page's workspaces service,
+    // or anything beneath them, may be opened.
+    const known = workspaceState.list.some((w) => p === w.path || p.startsWith(w.path + '/'))
+      || p === workspaceState.currentPath || (workspaceState.currentPath && p.startsWith(workspaceState.currentPath + '/'));
+    if (!known) return false;
+    shell.openPath(p);
+    return true;
+  });
+}
+
+// ---------- approvals, unread activity, palette, ws search/git ----------
+
+// Approvals: the companion plugin surfaces pendingApproval in /api/state;
+// doRefresh watches it, pops a small native decision dialog + a system
+// notification when it appears (and closes both when it clears).
+let lastApprovalId = null;
+let approvalWin = null;
+
+function underKnownRoot(p) {
+  if (typeof p !== 'string' || !p) return false;
+  const roots = [...workspaceState.list.map((w) => w.path), workspaceState.currentPath].filter(Boolean);
+  return roots.some((r) => p === r || p.startsWith(r + '/'));
+}
+
+function showApproval(ap) {
+  try {
+    const n = new Notification({ title: t('approvalTitle'), body: ap.summary || t('turnDoneBody') });
+    n.on('click', () => { if (win && !win.isDestroyed()) { win.show(); win.focus(); } });
+    n.show();
+  } catch { /* best-effort */ }
+  if (!approvalWin || approvalWin.isDestroyed()) {
+    approvalWin = new BrowserWindow({
+      width: 420, height: 190, show: false, frame: false, resizable: false,
+      skipTaskbar: true, alwaysOnTop: true,
+      webPreferences: {
+        preload: path.join(__dirname, 'preload.js'),
+        contextIsolation: true, nodeIntegration: false, sandbox: true,
+      },
+    });
+    approvalWin.loadFile(path.join(__dirname, 'approve-popup.html'));
+    approvalWin.webContents.on('did-finish-load', () => {
+      if (approvalWin) approvalWin.webContents.send('approval:show', currentApproval);
+    });
+  }
+  currentApproval = ap;
+  if (approvalWin && !approvalWin.isDestroyed()) {
+    const [w] = win && !win.isDestroyed() ? win.getContentSize() : [420, 300];
+    approvalWin.setPosition(Math.round(w / 2 - 210), 80);
+    approvalWin.webContents.send('approval:show', ap);
+    approvalWin.showInactive();
+  }
+}
+
+function hideApproval() {
+  if (approvalWin && !approvalWin.isDestroyed() && approvalWin.isVisible()) approvalWin.hide();
+}
+
+// Unread activity: sessions whose lastTurnEndSeq grew while NOT active.
+const prevTurnSeq = new Map();
+const unreadSessions = new Set();
+function markSessionRead(id) { if (id) unreadSessions.delete(id); }
+
+// Palette (Ctrl+Shift+P switch / Ctrl+Shift+F transcript search).
+let paletteWin = null;
+function openPalette(mode) {
+  if (!paletteWin || paletteWin.isDestroyed()) {
+    paletteWin = new BrowserWindow({
+      width: 600, height: 440, show: false, frame: false, resizable: false,
+      skipTaskbar: true,
+      webPreferences: {
+        preload: path.join(__dirname, 'preload.js'),
+        contextIsolation: true, nodeIntegration: false, sandbox: true,
+      },
+    });
+    paletteWin.loadFile(path.join(__dirname, 'palette.html'));
+    paletteWin.on('blur', () => { if (paletteWin && paletteWin.isVisible()) paletteWin.hide(); });
+  }
+  paletteWin.webContents.send('palette:mode', mode);
+  const [w, h] = win && !win.isDestroyed() ? win.getContentSize() : [600, 440];
+  paletteWin.setPosition(Math.round(w / 2 - 300), Math.round(h / 2 - 220));
+  paletteWin.show();
+  paletteWin.focus();
+  paletteWin.webContents.send('palette:mode', mode);
+}
+
+// Workspace text search (main-process fs walk; same noise filter as ws-tree).
+function wsSearch(root, query) {
+  if (!root || !query) return { ok: false, error: 'bad-args' };
+  const needle = String(query).toLowerCase();
+  const out = [];
+  const seen = { files: 0 };
+  const walk = (abs, rel, depth) => {
+    if (out.length >= 200 || depth > 8 || seen.files > 1500) return;
+    let entries;
+    try { entries = fs.readdirSync(abs, { withFileTypes: true }); } catch { return; }
+    for (const e of entries) {
+      if (e.name === '.DS_Store') continue;
+      if (e.isDirectory()) { if (!wsTree.IGNORED.has(e.name)) walk(path.join(abs, e.name), rel ? rel + '/' + e.name : e.name, depth + 1); continue; }
+      if (out.length >= 200 || seen.files > 1500) return;
+      seen.files++;
+      const p = path.join(abs, e.name);
+      let st; try { st = fs.statSync(p); } catch { continue; }
+      if (st.size > 256 * 1024) continue;
+      let text; try { text = fs.readFileSync(p, 'utf8'); } catch { continue; }
+      if (text.indexOf('\u0000') >= 0) continue; // binary
+      const lines = text.split('\n');
+      for (let i = 0; i < lines.length && out.length < 200; i++) {
+        if (lines[i].toLowerCase().includes(needle)) {
+          out.push({ rel: rel ? rel + '/' + e.name : e.name, path: p, line: i + 1, text: lines[i].trim().slice(0, 200) });
+        }
+      }
+    }
+  };
+  walk(root, '', 0);
+  return { ok: true, results: out, scanned: seen.files };
+}
+
+// Workspace git review (read-only).
+function wsGit(root) {
+  return new Promise((resolve) => {
+    if (!root) return resolve({ ok: false, error: 'bad-args' });
+    execFile('git', ['-C', root, 'status', '--porcelain=v1', '-b'], { timeout: 8000 }, (err, stdout) => {
+      if (err) return resolve({ ok: false, error: String(err.code || err.message) });
+      const lines = String(stdout).split('\n');
+      const branch = (lines[0] || '').replace(/^##\s+/, '').trim();
+      const files = lines.slice(1).filter(Boolean).map((l) => ({
+        status: l.slice(0, 2).trim(),
+        path: l.slice(3).trim(),
+      }));
+      execFile('git', ['-C', root, 'diff', '--unified=1'], { timeout: 15000, maxBuffer: 4 * 1024 * 1024 }, (err2, diff) => {
+        resolve({ ok: true, branch, files, diff: err2 ? '' : String(diff).slice(0, 200 * 1024) });
+      });
+    });
+  });
+}
+
+function registerExtrasIpc() {
+  ipcMain.handle('approval:decide', async (_e, decision) => {
+    if (decision === 'view') {
+      if (win && !win.isDestroyed()) { win.show(); win.focus(); }
+      return { ok: true };
+    }
+    hideApproval();
+    try {
+      const r = await balanceApi.sendPluginApprove(config.port, decision);
+      return r;
+    } catch (e) {
+      return { ok: false, status: 0, error: e.message };
+    }
+  });
+
+  ipcMain.handle('palette:sessions', () => balanceState.sessions.map((s) => ({
+    id: s.id,
+    title: s.title,
+    cost: s.cost,
+    unread: unreadSessions.has(s.id),
+    mtimeMs: s.mtimeMs,
+    current: s.id === balanceState.currentId,
+  })));
+
+  ipcMain.handle('session-search', (_e, q) => balanceApi.searchSessions(String(q || ''), 60));
+  ipcMain.handle('palette:open', (_e, id) => {
+    if (typeof id === 'string' && id) {
+      markSessionRead(id);
+      jumpToSession(id);
+    }
+    if (paletteWin && !paletteWin.isDestroyed() && paletteWin.isVisible()) paletteWin.hide();
+    return true;
+  });
+
+  ipcMain.handle('ws:search', (_e, a) => wsSearch(String(a && a.root || ''), String(a && a.query || '')));
+  ipcMain.handle('ws:git', (_e, a) => wsGit(String(a && a.root || '')));
+
+  // Ctrl+click on a chat path → reveal in the OS file manager (page → main).
+  ipcMain.on('reveal', (_e, payload) => {
+    const p = payload && typeof payload.path === 'string' ? payload.path : '';
+    if (!p) return;
+    const candidates = path.isAbsolute(p)
+      ? [p]
+      : [...(workspaceState.currentPath ? [workspaceState.currentPath] : []), ...workspaceState.list.map((w) => w.path)]
+          .map((r) => path.join(r, p));
+    for (const c of candidates) {
+      try {
+        if (fs.existsSync(c) && underKnownRoot(c)) { shell.showItemInFolder(c); return; }
+      } catch { /* keep looking */ }
+    }
+  });
+
+  // Quick input history (per profile, cleared on switch).
+  ipcMain.handle('quick:history', (_e, arg) => {
+    const list = config.quickInputHistory || [];
+    if (arg && arg.op === 'push' && typeof arg.text === 'string' && arg.text.trim()) {
+      const text = arg.text.trim();
+      if (list[0] !== text) {
+        config.quickInputHistory = [text, ...list.filter((x) => x !== text)].slice(0, 50);
+        saveConfig();
+      }
+      return config.quickInputHistory;
+    }
+    return list;
+  });
+}
+
+let currentApproval = null;
+
+
 // ---------- balance & usage ----------
 
 let balanceState = {
@@ -1009,6 +1501,8 @@ let balanceState = {
   estimated: null, calibrated: false, error: null,
   sessionCost: 0, turnCost: 0,
   currentId: null,
+  currentTokens: null, // official session.list tokenUsage of the active session
+  dshTurn: null, // 'working' | 'idle' | null (null = companion plugin absent)
   sessions: [],
 };
 let lastMenuKey = '';
@@ -1071,6 +1565,23 @@ async function doRefresh() {
   // never left blank while the scan runs.
   const serverP = balanceApi.fetchSessions(config.port).catch(() => null);
   const usageP = balanceApi.computeUsage(usageCache);
+  // Companion plugin (when installed): current-session state + realtime
+  // per-model usage. Probed lazily; on any failure we mark it absent for the
+  // session and the legacy paths below stay authoritative.
+  const pluginP = (async () => {
+    if (pluginAvailable === false) return null;
+    try {
+      const [state, usage] = await Promise.all([
+        balanceApi.fetchPluginState(config.port),
+        balanceApi.fetchPluginUsage(config.port),
+      ]);
+      pluginAvailable = true;
+      return { state, usage };
+    } catch {
+      pluginAvailable = false;
+      return null;
+    }
+  })();
   const officialP = (async () => {
     const key = balanceApi.getApiKey();
     if (!key) return { error: t('balNoKey') };
@@ -1109,30 +1620,51 @@ async function doRefresh() {
   // Cost numbers always come from the local scan (the usage-event口径 the
   // user validated); the server is used only to pick the ACTIVE session
   // (follows what the user is working on / switched to in the web UI).
+  const plugin = await pluginP;
   const usage = await usageP;
   balanceState.consumed = balanceApi.costOfByModel(usage.byModel, pricing);
   balanceState.turnCost = balanceApi.costOfByModel(usage.userMsgByModel, pricing);
+  const titleById = new Map((server || []).filter((s) => s.title).map((s) => [s.id, s.title]));
   balanceState.sessions = usage.sessions.map((s) => ({
     id: s.id,
-    title: null,
+    title: titleById.get(s.id) || null,
     mtimeMs: s.mtimeMs,
     cost: balanceApi.costOfByModel(s.byModel, pricing),
   }));
   let activeId = null;
-  if (server && server.length) {
-    // Manual override: the user picked a session in the balance details page.
-    if (config.balanceSessionId && server.some((s) => s.id === config.balanceSessionId)) {
-      activeId = config.balanceSessionId;
-    } else {
-      const cur = server.find((s) => s.running && !s.blank)
-        || server.filter((s) => !s.blank).sort((a, b) => b.updatedAt - a.updatedAt)[0]
-        || null;
-      activeId = cur ? cur.id : null;
-    }
+  if (config.balanceSessionIdManual && config.balanceSessionId && (!server || server.some((s) => s.id === config.balanceSessionId))) {
+    // Manual override (balance page / deep link): the user explicitly picked
+    // this session. Sniffed ids set balanceSessionId WITHOUT the manual flag,
+    // so they never outrank the companion plugin below.
+    activeId = config.balanceSessionId;
+  } else if (plugin && plugin.state.currentSessionId) {
+    // Companion plugin: authoritative "user is working here right now".
+    activeId = plugin.state.currentSessionId;
+  } else if (server && server.length) {
+    const cur = server.find((s) => s.running && !s.blank)
+      || server.filter((s) => !s.blank).sort((a, b) => b.updatedAt - a.updatedAt)[0]
+      || null;
+    activeId = cur ? cur.id : null;
   }
   if (!activeId) activeId = (usage.sessions[0] || {}).id || null; // local fallback (newest)
   balanceState.currentId = activeId;
-  const sess = usage.sessions.find((s) => s.id === activeId);
+  // Official per-session token usage (session.list RPC) for the ACTIVE
+  // session — surfaced in the files-panel stats strip.
+  const serverItem = server ? server.find((s) => s.id === activeId) : null;
+  if (serverItem) balanceState.currentTokens = serverItem.tokens;
+  let sess = usage.sessions.find((s) => s.id === activeId);
+  // The plugin's turn-completion signals (seq/summary) are in-memory and
+  // fresher than the file scan; its token counters, however, only cover
+  // events since the dsh process started and OVERLAP the file scan (same
+  // events, different vantage point) — replacing would under- or double-
+  // count. So: only the completion signals come from the plugin; all token
+  // accounting stays on the local scan (complete history, ≤1 refresh stale).
+  if (sess && plugin) {
+    const ps = plugin.usage.sessions.find((s) => s.id === activeId);
+    if (ps && (ps.lastTurnEndSeq || ps.lastSummary)) {
+      sess = { ...sess, lastTurnEndSeq: ps.lastTurnEndSeq || sess.lastTurnEndSeq, lastSummary: ps.lastSummary || sess.lastSummary };
+    }
+  }
   balanceState.sessionCost = sess ? balanceApi.costOfByModel(sess.byModel, pricing) : 0;
   // "Last turn" follows the CURRENT session (not the newest file): usage since
   // its last user/message — taken from the worker's cached parse, so no
@@ -1140,6 +1672,24 @@ async function doRefresh() {
   balanceState.turnCost = sess ? balanceApi.costOfByModel(sess.userMsgByModel, pricing) : 0;
   checkTurnEnd(sess);
   balanceState.hitRate = 0; // server path has no per-session hit rate; kept for compatibility
+  if (plugin) balanceState.dshTurn = plugin.state.turn; // 'working' | 'idle' (plugin only)
+  // Approval watch: surface new pending approvals, dismiss the popup when
+  // the user answered in the web UI (plugin clears it on the next event).
+  const ap = plugin ? plugin.state.pendingApproval : null;
+  if (ap && ap.id !== lastApprovalId) {
+    lastApprovalId = ap.id;
+    showApproval(ap);
+  } else if (!ap && lastApprovalId) {
+    lastApprovalId = null;
+    hideApproval();
+  }
+  // Unread activity: a session finished a turn while NOT being viewed.
+  for (const s of usage.sessions) {
+    const prev = prevTurnSeq.get(s.id);
+    if (prev != null && s.lastTurnEndSeq > prev && s.id !== activeId) unreadSessions.add(s.id);
+    prevTurnSeq.set(s.id, s.lastTurnEndSeq);
+  }
+  markSessionRead(activeId);
   // ---- Conversation-aware estimated balance ----
   const now = Date.now();
   const official = balanceState.official;
@@ -1226,6 +1776,7 @@ function balanceMenuItems() {
       checked: isCur,
       click: () => {
         config.balanceSessionId = s.id;
+        config.balanceSessionIdManual = true;
         saveConfig();
         refreshBalance();
       },
@@ -1259,7 +1810,26 @@ function trayMenuTemplate() {
     { label: t('trayShow'), click: () => toggleWindow() },
     { label: t('trayBrowser'), click: () => shell.openExternal(appUrl()) },
     { label: t('trayRestart'), click: () => restartDsh() },
+    { label: t('filesPanel'), click: () => toggleFilesPanel() },
     { label: t('settings'), click: () => openSettings() },
+    {
+      label: t('trayPins'),
+      submenu: (config.pinnedSessions || []).length
+        ? (config.pinnedSessions || []).map((p) => ({
+          label: (p.title || p.id).slice(0, 28),
+          click: () => jumpToSession(p.id),
+        }))
+        : [{ label: t('noPins'), enabled: false }],
+    },
+    { label: t('profilesMenu'), submenu: (config.profiles || []).map((p) => ({
+      label: p.name,
+      type: 'checkbox',
+      checked: p.name === config.activeProfile,
+      click: () => switchProfile(p.name),
+    })) },
+    ...(pluginAvailable !== true
+      ? [{ label: t('pluginInstall'), click: () => installPluginAndRestart() }]
+      : []),
     ...(config.sourceDir
       ? [{ label: t('buildInstall'), click: () => buildAndInstall() }]
       : []),
@@ -1333,7 +1903,24 @@ function trayMenuItems() {
     { label: t('trayShow'), action: () => toggleWindow() },
     { label: t('trayBrowser'), action: () => shell.openExternal(appUrl()) },
     { label: t('trayRestart'), action: () => restartDsh() },
+    { label: t('filesPanel'), action: () => toggleFilesPanel() },
     { label: t('settings'), action: () => openSettings() },
+    {
+      label: t('trayPins'),
+      children: (config.pinnedSessions || []).length
+        ? (config.pinnedSessions || []).map((p) => ({
+          label: (p.title || p.id).slice(0, 28),
+          action: () => jumpToSession(p.id),
+        }))
+        : [{ label: t('noPins') }],
+    },
+    { label: t('profilesMenu'), children: (config.profiles || []).map((p) => ({
+      label: (p.name === config.activeProfile ? '✓ ' : '') + p.name,
+      action: () => switchProfile(p.name),
+    })) },
+    ...(pluginAvailable !== true
+      ? [{ label: t('pluginInstall'), action: () => installPluginAndRestart() }]
+      : []),
     ...(config.sourceDir
       ? [{ label: t('buildInstall'), action: () => buildAndInstall() }]
       : []),
@@ -1465,6 +2052,174 @@ function closeOverlay() {
 function openSettings() { openOverlay('settings.html'); }
 function openBalance() { openOverlay('balance.html'); }
 
+// ---------- global quick input ----------
+
+// Mini composer on a system-wide hotkey (default Ctrl+Shift+D): type a prompt
+// anywhere, Enter sends it to the current dsh session via the companion
+// plugin. A separate always-on-top window (not an overlay) so it works while
+// the main window is hidden.
+
+let quickWin = null;
+let quickPendingPrefill = null;
+
+function quickSessionLabel() {
+  const id = balanceState.currentId;
+  if (!id) return t('quickNoSession');
+  const turn = pluginAvailable ? (balanceState.dshTurn === 'working' ? ' · working' : '') : '';
+  return `${id.slice(0, 16)}…${turn}`;
+}
+
+function createQuickInput() {
+  const quick = new BrowserWindow({
+    width: 560,
+    height: 200,
+    show: false,
+    frame: false,
+    resizable: false,
+    skipTaskbar: true,
+    alwaysOnTop: true,
+    // no activate: don't steal focus from the current app when spawned for prefill
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+    },
+  });
+  quick.loadFile(path.join(__dirname, 'quickinput.html'));
+  quick.on('blur', () => { if (quick.isVisible()) quick.hide(); });
+  quick.webContents.on('did-finish-load', () => {
+    quick.webContents.send('quick:state', quickSessionLabel());
+    if (quickPendingPrefill) {
+      quick.webContents.send('quick:prefill', quickPendingPrefill);
+      quickPendingPrefill = null;
+    }
+  });
+  return quick;
+}
+
+function toggleQuickInput() {
+  if (!quickWin || quickWin.isDestroyed()) quickWin = createQuickInput();
+  const quick = quickWin;
+  if (quick.isVisible()) { quick.hide(); return; }
+  // top-center of the display the main window (or cursor) is on
+  const display = win && !win.isDestroyed()
+    ? screen.getDisplayMatching(win.getBounds())
+    : screen.getCursorScreenMonitor();
+  const wa = display.workArea;
+  quick.setPosition(Math.round(wa.x + (wa.width - 560) / 2), Math.round(wa.y + Math.max(12, wa.height * 0.18)));
+  quick.show();
+  quick.focus();
+  quick.webContents.send('quick:state', quickSessionLabel());
+}
+
+// File drops land here (via the will-navigate file: interception).
+function prefillQuickInput(paths) {
+  if (!Array.isArray(paths) || !paths.length) return;
+  if (!quickWin || quickWin.isDestroyed()) quickWin = createQuickInput();
+  const quick = quickWin;
+  const showQuietly = () => {
+    // showInactive: visible for the user but keeps keyboard focus where it
+    // was (they are mid-drag, not mid-typing).
+    if (!quick.isVisible()) {
+      const wa = screen.getCursorScreenMonitor().workArea;
+      quick.setPosition(Math.round(wa.x + (wa.width - 560) / 2), Math.round(wa.y + Math.max(12, wa.height * 0.18)));
+      quick.showInactive();
+    }
+  };
+  if (quick.webContents.isLoading()) {
+    quickPendingPrefill = paths;
+    showQuietly();
+  } else {
+    showQuietly();
+    quick.webContents.send('quick:prefill', paths);
+  }
+}
+
+async function quickSend(text) {
+  await probePlugin();
+  if (pluginAvailable !== true) return { ok: false, error: t('pluginStatusOff') };
+  // The plugin's live currentSessionId wins (sub-second); balanceState is the
+  // 10s-refresh fallback.
+  let sid = null;
+  try { sid = (await balanceApi.fetchPluginState(config.port)).currentSessionId; } catch { /* plugin just went away */ }
+  if (!sid) sid = balanceState.currentId;
+  if (!sid) return { ok: false, error: t('quickNoSession') };
+  try {
+    const r = await balanceApi.sendPluginPrompt(config.port, sid, text);
+    if (r.ok) {
+      config.quickInputHistory = [text.trim(), ...(config.quickInputHistory || []).filter((x) => x !== text.trim())].slice(0, 50);
+      saveConfig();
+      return { ok: true };
+    }
+    if (r.status === 501) {
+      // No send RPC in this dsh build — surface the main window instead.
+      if (win && !win.isDestroyed()) { win.show(); win.focus(); }
+      return { ok: false, error: t('quickRpcUnavailable') };
+    }
+    return { ok: false, error: r.status === 409 ? t('quickNoSession') : `HTTP ${r.status}` };
+  } catch (e) {
+    return { ok: false, error: t('quickSendFail', { err: e.message }) };
+  }
+}
+
+function registerQuickInputShortcut() {
+  globalShortcut.unregisterAll();
+  if (config.quickInputEnabled !== false) {
+    try {
+      globalShortcut.register(config.quickInputShortcut || 'Control+Shift+D', toggleQuickInput);
+    } catch (e) {
+      console.error('[quick-input] shortcut registration failed:', e.message);
+    }
+  }
+  try {
+    globalShortcut.register('Control+Shift+E', () => toggleFilesPanel());
+  } catch (e) {
+    console.error('[files-panel] shortcut registration failed:', e.message);
+  }
+  try {
+    globalShortcut.register('Control+Shift+P', () => openPalette('sessions'));
+    globalShortcut.register('Control+Shift+F', () => openPalette('search'));
+  } catch (e) {
+    console.error('[palette] shortcut registration failed:', e.message);
+  }
+}
+
+// ---------- multi-profile ----------
+
+function resolveDshHome(dshHome) {
+  if (dshHome) return dshHome;
+  // Same default as startup: portable keeps data next to the app.
+  if (config.dshCommand === 'bundled' && app.isPackaged) {
+    return path.join(path.dirname(process.execPath), 'data');
+  }
+  return path.join(os.homedir(), '.dsh');
+}
+
+function switchProfile(name) {
+  const p = (config.profiles || []).find((x) => x.name === name);
+  if (!p || p.name === config.activeProfile) return false;
+  applyProfile(config, p);
+  saveConfig();
+  balanceApi.setDshHome(resolveDshHome(p.dshHome));
+  // Reset all conversation/usage state — different home, different history.
+  usageCache.clear();
+  lastNotifiedTurnEndSeq = 0;
+  convBase = null; convPrevTurnCost = 0; convDone = false; convFrozenEst = null; convLastOfficial = null;
+  pluginAvailable = null;
+  config.pinnedSessions = []; // pins reference the other home's sessions
+  config.quickInputHistory = []; // history is per profile
+  unreadSessions.clear();
+  prevTurnSeq.clear();
+  hideApproval();
+  saveConfig();
+  sendPinsToPage();
+  notify('DeepSeek Harness', t('profileSwitched', { name: p.name }));
+  restartDsh();
+  applyMenus();
+  return true;
+}
+
 function registerSettingsIpc() {
   ipcMain.handle('settings:get-state', () => {
     // In bundled (portable) mode the meaningful dsh version is the bundled one.
@@ -1488,6 +2243,11 @@ function registerSettingsIpc() {
 
     update: lastChecked.update,
     balance: balanceState,
+    pluginAvailable: pluginAvailable === true,
+    quickInputEnabled: config.quickInputEnabled !== false,
+    quickInputShortcut: config.quickInputShortcut || 'Control+Shift+D',
+    profiles: config.profiles || [],
+    activeProfile: config.activeProfile || '',
   };
   });
   ipcMain.handle('settings:check-update', () => checkDshUpdate(true));
@@ -1504,6 +2264,7 @@ function registerSettingsIpc() {
   });
   ipcMain.handle('settings:set-current-session', (_e, id) => {
     config.balanceSessionId = typeof id === 'string' ? id : '';
+    config.balanceSessionIdManual = !!config.balanceSessionId;
     saveConfig();
     refreshBalance();
   });
@@ -1519,6 +2280,44 @@ function registerSettingsIpc() {
   ipcMain.handle('settings:get-balance', () => balanceState);
   ipcMain.handle('settings:refresh-balance', () => refreshBalance());
   ipcMain.handle('settings:calibrate-balance', () => calibrateBalance());
+
+  // quick input
+  ipcMain.handle('quick:send', (_e, text) => (typeof text === 'string' ? quickSend(text) : { ok: false, error: 'no text' }));
+  ipcMain.handle('quick:hide', () => { if (quickWin && !quickWin.isDestroyed() && quickWin.isVisible()) quickWin.hide(); });
+
+  // companion plugin
+  ipcMain.handle('plugin:status', () => pluginAvailable);
+  ipcMain.handle('plugin:install', () => { installPluginAndRestart(); return true; });
+
+  // multi-profile
+  ipcMain.handle('profiles:list', () => ({ profiles: config.profiles || [], active: config.activeProfile }));
+  ipcMain.handle('profiles:add', (_e, p) => {
+    const name = p && typeof p.name === 'string' ? p.name.trim() : '';
+    if (!name) return { ok: false, error: 'name required' };
+    if ((config.profiles || []).some((x) => x.name === name)) return { ok: false, error: 'name exists' };
+    const port = Number.isInteger(p.port) && p.port > 0 && p.port < 65536 ? p.port : null;
+    config.profiles = [...(config.profiles || []), { name, dshHome: typeof p.dshHome === 'string' ? p.dshHome.trim() : '', port }];
+    saveConfig();
+    applyMenus();
+    return { ok: true };
+  });
+  ipcMain.handle('profiles:switch', (_e, name) => ({ ok: switchProfile(name) }));
+  ipcMain.handle('profiles:remove', (_e, name) => {
+    const list = config.profiles || [];
+    if (list.length <= 1) return { ok: false, error: 'cannot remove the last profile' };
+    if (name === config.activeProfile) return { ok: false, error: 'switch away first' };
+    config.profiles = list.filter((p) => p.name !== name);
+    saveConfig();
+    applyMenus();
+    return { ok: true };
+  });
+
+  // quick input toggle (shortcut itself is edited via config.json for now)
+  ipcMain.handle('settings:set-quick-input', (_e, on) => {
+    config.quickInputEnabled = !!on;
+    saveConfig();
+    registerQuickInputShortcut();
+  });
 }
 
 // ---------- app lifecycle ----------
@@ -1531,8 +2330,31 @@ const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
   app.quit();
 } else {
-  app.on('second-instance', () => {
+  app.on('second-instance', (_e, argv) => {
+    // dsh:// deep link launch (Linux/Windows pass the URL in argv; macOS uses
+    // the open-url event below).
+    const link = deepLinkFromArgv(argv);
+    if (link && link.action === 'session') {
+      config.balanceSessionId = link.id;
+      config.balanceSessionIdManual = true;
+      saveConfig();
+      refreshBalance().catch(() => {});
+    }
     if (win) { win.show(); win.focus(); }
+  });
+
+  // macOS deep links arrive here.
+  app.on('open-url', (event, url) => {
+    event.preventDefault();
+    const link = deepLinkFromArgv([url]);
+    if (link && link.action === 'session') {
+      config.balanceSessionId = link.id;
+      config.balanceSessionIdManual = true;
+      saveConfig();
+      refreshBalance().catch(() => {});
+    }
+    if (win) { win.show(); win.focus(); }
+    else if (app.isReady()) boot();
   });
 
   app.whenReady().then(() => {
@@ -1560,14 +2382,25 @@ if (!gotLock) {
       balanceApi.setDshHome(path.join(path.dirname(process.execPath), 'data'));
     }
     registerSettingsIpc();
+    registerPinIpc();
+    registerFilesIpc();
+    registerExtrasIpc();
     Menu.setApplicationMenu(Menu.buildFromTemplate(appMenuTemplate()));
     createTray();
     setupAutoUpdater();
     boot();
+    // dsh:// deep links (deb/AppImage desktop entries declare the scheme;
+    // dev runs register best-effort with the desktop environment).
+    try { app.setAsDefaultProtocolClient('dsh'); } catch { /* best-effort */ }
+    // Global quick input hotkey.
+    registerQuickInputShortcut();
     // Startup auto-check for a newer dsh on npm (non-intrusive notification).
     setTimeout(() => checkDshUpdate(false), 4000);
     // Balance & usage summary (official balance + local token estimate).
     setTimeout(() => refreshBalance().catch((e) => console.error('[balance] init failed:', e.message)), 8000);
+    // Probe the companion plugin once the server is likely up; the tray menu
+    // shows "install" only when it is really absent.
+    setTimeout(() => probePlugin().then(() => applyMenus()).catch(() => {}), 6000);
     // Periodic refresh: session files grow while chatting; the estimate rolls
     // forward and settles once the official billing confirms (~3 min).
     // Menus are only rebuilt when displayed values change (see refreshBalance).
@@ -1583,6 +2416,10 @@ if (!gotLock) {
     event.preventDefault();
     cleaningUp = true;
     quitting = true;
+    globalShortcut.unregisterAll();
+    if (win && !win.isDestroyed() && !win.isMaximized()) {
+      try { config.windowState = { ...win.getBounds(), maximized: false }; saveConfig(); } catch { /* best-effort */ }
+    }
     // Async cleanup (including external dsh) must finish before we exit.
     stopDsh().then(() => app.exit(0));
   });

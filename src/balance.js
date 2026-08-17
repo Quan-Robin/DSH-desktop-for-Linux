@@ -143,6 +143,68 @@ async function fetchSessions(port) {
   });
 }
 
+// ── companion plugin (dsh-plugin-desktop) endpoints ──────────────────────
+// Preferred source for the CURRENT session and realtime per-model usage;
+// every call may fail (plugin not installed / older dsh) — callers must have
+// a fallback. Response shape: see plugin/dsh-plugin-desktop/lib/index.js.
+
+async function fetchPluginState(port) {
+  const res = await fetch(`http://127.0.0.1:${port}/api/state`, { signal: AbortSignal.timeout(1500) });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const data = await res.json();
+  if (data?.plugin !== 'dsh-plugin-desktop') throw new Error('not the desktop plugin');
+  const ap = data.pendingApproval;
+  return {
+    currentSessionId: data.currentSessionId || null,
+    turn: data.turn === 'working' ? 'working' : 'idle',
+    pendingApproval: ap && typeof ap === 'object'
+      ? { id: String(ap.id || ''), summary: String(ap.summary || ''), since: ap.since || 0, sessionId: ap.sessionId || null }
+      : null,
+    lastTurnEndSeq: data.lastTurnEndSeq || 0,
+    lastSummary: data.lastSummary || '',
+  };
+}
+
+async function fetchPluginUsage(port) {
+  const res = await fetch(`http://127.0.0.1:${port}/api/usage`, { signal: AbortSignal.timeout(1500) });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const data = await res.json();
+  if (data?.plugin !== 'dsh-plugin-desktop') throw new Error('not the desktop plugin');
+  return {
+    since: data.since || 0,
+    complete: !!data.complete,
+    byModel: data.byModel || {},
+    sessions: Array.isArray(data.sessions) ? data.sessions : [],
+  };
+}
+
+// Send a prompt through the plugin (quick input). Resolves { ok, status } —
+// status 501 means the dsh build has no prompt RPC; 409 no current session.
+async function sendPluginPrompt(port, sessionId, text) {
+  const res = await fetch(`http://127.0.0.1:${port}/api/prompt`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sessionId: sessionId || undefined, text }),
+    signal: AbortSignal.timeout(4000),
+  });
+  if (res.status === 501 || res.status === 409 || res.status === 400) return { ok: false, status: res.status };
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return { ok: true, status: 200 };
+}
+
+// Answer a pending approval through the plugin (pet / approval popup).
+async function sendPluginApprove(port, decision) {
+  const res = await fetch(`http://127.0.0.1:${port}/api/approve`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ decision: decision === 'reject' ? 'reject' : 'approve' }),
+    signal: AbortSignal.timeout(4000),
+  });
+  if (res.status === 501 || res.status === 409) return { ok: false, status: res.status };
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return { ok: true, status: 200 };
+}
+
 function findSessionFiles() {
   const root = path.join(dshHome, 'sessions');
   const out = [];
@@ -325,6 +387,62 @@ function cacheHitRate(usage) {
   return total > 0 ? usage.cacheRead / total : 0;
 }
 
+// Cross-session transcript search: rides the worker (search protocol) so the
+// zstd decompression of every session file never blocks the main process;
+// falls back to an inline scan when the worker is unavailable.
+function searchSessions(query, cap = 60) {
+  const needle = String(query || '').trim().toLowerCase();
+  if (!needle) return Promise.resolve([]);
+  const files = findSessionFiles();
+  return new Promise((resolve) => {
+    const w = getBalanceWorker();
+    if (!w) {
+      const { messageText } = require('./usage-parse');
+      const out = [];
+      for (const f of files) {
+        if (out.length >= cap) break;
+        try {
+          const json = decompressFileSync(f).toString('utf8');
+          for (const line of json.split('\n')) {
+            if (out.length >= cap) break;
+            if (!line.includes('"type":')) continue;
+            let ev; try { ev = JSON.parse(line); } catch { continue; }
+            const text = messageText(ev);
+            const idx = text.toLowerCase().indexOf(needle);
+            if (idx >= 0) out.push({
+              sessionId: path.basename(path.dirname(f)),
+              seq: ev.seq || 0,
+              snippet: text.slice(Math.max(0, idx - 40), idx + 120).replace(/\s+/g, ' ').trim(),
+            });
+          }
+        } catch { /* unreadable: skip */ }
+      }
+      return resolve(out);
+    }
+    let settled = false;
+    const timer = setTimeout(() => { if (!settled) { settled = true; resolve([]); } }, 30000);
+    w.once('message', (results) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(results || []);
+    });
+    w.once('error', () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve([]);
+    });
+    w.postMessage({ type: 'search', files, query: needle, cap });
+  });
+}
+
+// Inline-fallback helper (worker path uses the same fzstd in-thread).
+function decompressFileSync(file) {
+  const { decompress } = require('fzstd');
+  return Buffer.from(decompress(new Uint8Array(fs.readFileSync(file))));
+}
+
 module.exports = {
   setDshHome,
   getDshHome,
@@ -332,7 +450,12 @@ module.exports = {
   getApiKey,
   fetchOfficialBalance,
   fetchSessions,
+  fetchPluginState,
+  fetchPluginUsage,
+  sendPluginPrompt,
+  sendPluginApprove,
   computeUsage,
+  searchSessions,
   findSessionFile,
   parseSessionFileById,
   costOfByModel,

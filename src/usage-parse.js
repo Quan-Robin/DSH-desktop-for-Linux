@@ -27,6 +27,19 @@ function extractText(content) {
     .trim();
 }
 
+// Text content of user/assistant message events — the searchable transcript.
+function messageText(ev) {
+  if (!ev || typeof ev.type !== 'string') return '';
+  if (ev.type === 'user/message') {
+    const t = extractText(ev.data?.message?.content);
+    if (t) return t;
+    const c = ev.data?.content;
+    return typeof c === 'string' ? c : '';
+  }
+  if (ev.type === 'assistant/message') return extractText(ev.data?.message?.content);
+  return '';
+}
+
 // Parse one session file. Returns per-model usage, the max turn number, and the
 // usage of that max turn. The model of each call is paired from the preceding
 // request/header event (stream order). Usage is read from assistant/chunk
@@ -83,4 +96,4 @@ function parseUsageFile(file) {
   return { byModel, userMsgByModel, lastTurnEndSeq, lastSummary };
 }
 
-module.exports = { emptyUsage, addUsage, extractText, parseUsageFile };
+module.exports = { emptyUsage, addUsage, extractText, messageText, parseUsageFile };

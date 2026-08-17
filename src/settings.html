@@ -68,6 +68,34 @@
 </section>
 
 <section>
+  <div class="row"><span class="label" data-i18n="quickInputLabel">全局快捷输入</span>
+    <select id="sel-quick">
+      <option value="true" data-i18n="quickOn">开启（Ctrl+Shift+D 唤出，需伴生插件）</option>
+      <option value="false" data-i18n="quickOff">关闭</option>
+    </select>
+  </div>
+</section>
+
+<section>
+  <div class="row"><span class="label" data-i18n="pluginMenu">伴生插件</span><span class="val" id="plugin-status">…</span></div>
+  <div class="row">
+    <button id="btn-plugin" data-i18n="pluginInstall">安装伴生插件（推荐）</button>
+  </div>
+  <div class="muted" data-i18n="pluginDesc">安装后提供：当前会话感知（不再嗅探请求）、实时轮次状态、快捷输入发送通道。安装会自动重启服务。</div>
+</section>
+
+<section>
+  <div class="row"><span class="label" data-i18n="profilesMenu">配置</span>
+    <select id="sel-profile"></select>
+  </div>
+  <div class="row">
+    <button id="btn-profile-add" data-i18n="profileAdd">新增配置</button>
+    <button id="btn-profile-del" data-i18n="profileDel">删除所选</button>
+  </div>
+  <div class="muted" data-i18n="profileDesc">每个配置独立的 dsh 数据目录（DSH_HOME）与端口——不同账号/项目互不串数据。切换会重启服务。</div>
+</section>
+
+<section>
   <div class="row"><span class="label" data-i18n="infoPort">端口</span><span class="val" id="cfg-port">…</span></div>
   <div class="row"><span class="label" data-i18n="infoSource">源码目录</span><span class="val" id="cfg-source">…</span></div>
   <div class="muted" id="tip"></div>
@@ -85,6 +113,15 @@
       closeBehaviorLabel: '关闭窗口时', closeUnset: '首次询问（默认）', closeTrayOpt: '保留后台（托盘）',
       closeQuitOpt: '完全退出', closeAskOpt: '每次询问',
       notifyTurnEnd: '对话完成提醒', notifyOn: '开启（窗口不在前台时通知）', notifyOff: '关闭',
+      quickInputLabel: '全局快捷输入', quickOn: '开启（Ctrl+Shift+D 唤出，需伴生插件）', quickOff: '关闭',
+      pluginMenu: '伴生插件', pluginInstall: '安装伴生插件（推荐）',
+      pluginDesc: '安装后提供：当前会话感知（不再嗅探请求）、实时轮次状态、快捷输入发送通道。安装会自动重启服务。',
+      pluginOn: '已连接', pluginOff: '未安装（功能受限）', pluginUnknown: '检测中…',
+      profilesMenu: '配置', profileAdd: '新增配置', profileDel: '删除所选',
+      profileDesc: '每个配置独立的 dsh 数据目录（DSH_HOME）与端口——不同账号/项目互不串数据。切换会重启服务。',
+      profileNamePrompt: '配置名称（如：工作 / 个人）', profileHomePrompt: 'dsh 数据目录（空 = ~/.dsh）', profilePortPrompt: '端口（空 = 跟随当前）',
+      profileDelLast: '至少保留一个配置', profileDelActive: '请先切换到其他配置再删除',
+      profileExists: '同名配置已存在', profileNameRequired: '名称不能为空',
       tip: '「从源码构建并安装」见托盘/文件菜单',
     },
     en: {
@@ -97,6 +134,15 @@
       closeBehaviorLabel: 'On window close', closeUnset: 'Ask on first close (default)', closeTrayOpt: 'Keep in tray',
       closeQuitOpt: 'Fully quit', closeAskOpt: 'Ask every time',
       notifyTurnEnd: 'Turn-finished notification', notifyOn: 'On (notify when window is not focused)', notifyOff: 'Off',
+      quickInputLabel: 'Global quick input', quickOn: 'On (Ctrl+Shift+D, needs companion plugin)', quickOff: 'Off',
+      pluginMenu: 'Companion plugin', pluginInstall: 'Install companion plugin (recommended)',
+      pluginDesc: 'Provides: current-session awareness (no request sniffing), realtime turn state, and the quick-input send channel. Installing restarts the service.',
+      pluginOn: 'Connected', pluginOff: 'Not installed (limited features)', pluginUnknown: 'Checking…',
+      profilesMenu: 'Profiles', profileAdd: 'Add profile', profileDel: 'Delete selected',
+      profileDesc: 'Each profile has its own dsh data dir (DSH_HOME) and port — accounts/projects never mix. Switching restarts the service.',
+      profileNamePrompt: 'Profile name (e.g. work / personal)', profileHomePrompt: 'dsh data dir (empty = ~/.dsh)', profilePortPrompt: 'Port (empty = keep current)',
+      profileDelLast: 'Keep at least one profile', profileDelActive: 'Switch away before deleting',
+      profileExists: 'A profile with this name exists', profileNameRequired: 'Name is required',
       tip: '"Build & Install" lives in the tray / File menu',
     },
   };
@@ -131,6 +177,20 @@
     document.getElementById('sel-lang').value = lang;
     document.getElementById('sel-close').value = state.closeBehavior || '';
     document.getElementById('sel-notify').value = String(state.notifyOnTurnEnd !== false);
+    document.getElementById('sel-quick').value = String(state.quickInputEnabled !== false);
+    const ps = document.getElementById('plugin-status');
+    if (state.pluginAvailable) { ps.textContent = d.pluginOn; ps.className = 'val status-ok'; }
+    else { ps.textContent = d.pluginOff; ps.className = 'val status-new'; }
+    document.getElementById('btn-plugin').disabled = !!state.pluginAvailable;
+    const sel = document.getElementById('sel-profile');
+    sel.innerHTML = '';
+    for (const p of state.profiles || []) {
+      const o = document.createElement('option');
+      o.value = p.name;
+      o.textContent = p.name + (p.dshHome ? ` (${p.dshHome})` : '') + (p.port ? ` :${p.port}` : '');
+      if (p.name === state.activeProfile) o.selected = true;
+      sel.appendChild(o);
+    }
   }
 
   window.desktop.onLanguageChanged((l) => { lang = l; applyLang(); render(); });
@@ -140,6 +200,41 @@
   });
   document.getElementById('sel-notify').addEventListener('change', (e) => {
     window.desktop.setNotify(e.target.value === 'true');
+  });
+  document.getElementById('sel-quick').addEventListener('change', (e) => {
+    window.desktop.setQuickInput(e.target.value === 'true');
+  });
+  document.getElementById('btn-plugin').addEventListener('click', async () => {
+    await window.desktop.installPlugin();
+    // the service is restarting; close the overlay, status will refresh on reopen
+    window.desktop.closeSettings();
+  });
+  document.getElementById('sel-profile').addEventListener('change', async (e) => {
+    await window.desktop.switchProfile(e.target.value);
+    state = await window.desktop.getState();
+    render();
+  });
+  document.getElementById('btn-profile-add').addEventListener('click', async () => {
+    const d = DICT[lang] || DICT.zh;
+    const name = prompt(d.profileNamePrompt, '');
+    if (name === null) return;
+    if (!name.trim()) { alert(d.profileNameRequired); return; }
+    const home = prompt(d.profileHomePrompt, '') || '';
+    const portStr = prompt(d.profilePortPrompt, '') || '';
+    const port = /^\d+$/.test(portStr.trim()) ? Number(portStr.trim()) : null;
+    const r = await window.desktop.addProfile({ name: name.trim(), dshHome: home.trim(), port });
+    if (!r.ok) { alert(r.error === 'name exists' ? d.profileExists : r.error); return; }
+    state = await window.desktop.getState();
+    render();
+  });
+  document.getElementById('btn-profile-del').addEventListener('click', async () => {
+    const d = DICT[lang] || DICT.zh;
+    const sel = document.getElementById('sel-profile');
+    if (!sel.value) return;
+    const r = await window.desktop.removeProfile(sel.value);
+    if (!r.ok) { alert(r.error === 'cannot remove the last profile' ? d.profileDelLast : r.error === 'switch away first' ? d.profileDelActive : r.error); return; }
+    state = await window.desktop.getState();
+    render();
   });
   document.getElementById('sel-lang').addEventListener('change', (e) => {
     window.desktop.setLanguage(e.target.value);

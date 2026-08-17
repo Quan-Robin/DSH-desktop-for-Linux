@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>DeepSeek Harness — Quick Input</title>
+<style>
+  :root { color-scheme: light dark; }
+  html, body { height: 100%; }
+  body { margin: 0; padding: 12px 14px; font-family: system-ui, "Noto Sans CJK SC", sans-serif; font-size: 13px; }
+  #wrap { display: flex; flex-direction: column; gap: 6px; height: calc(100vh - 24px); }
+  #session { color: rgba(128,128,128,1); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #row { display: flex; gap: 8px; align-items: flex-end; flex: 1; }
+  textarea {
+    flex: 1; resize: none; border: 1px solid rgba(128,128,128,.4); border-radius: 8px;
+    padding: 8px 10px; font: inherit; height: 100%; box-sizing: border-box; outline: none;
+    background: transparent;
+  }
+  textarea:focus { border-color: #4d6bfe; }
+  button {
+    padding: 6px 16px; border-radius: 8px; border: none; background: #4d6bfe; color: #fff;
+    cursor: pointer; font: inherit; height: fit-content;
+  }
+  button:disabled { opacity: .5; cursor: default; }
+  #hint { color: rgba(128,128,128,1); font-size: 11px; }
+  #err { color: #c62828; font-size: 12px; min-height: 14px; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <div id="session">…</div>
+  <div id="row">
+    <textarea id="text" placeholder="发送到当前 dsh 会话…（Enter 发送，Esc 隐藏）" spellcheck="false"></textarea>
+    <button id="send" title="Enter">↑</button>
+  </div>
+  <div id="err"></div>
+  <div id="hint">Ctrl+Enter 换行 · 拖入窗口的文件会以路径填入</div>
+</div>
+<script>
+  const els = {
+    text: document.getElementById('text'),
+    send: document.getElementById('send'),
+    session: document.getElementById('session'),
+    err: document.getElementById('err'),
+  };
+  let sending = false;
+
+  function setSession(info) {
+    els.session.textContent = info || '…';
+  }
+
+  async function submit() {
+    const text = els.text.value.trim();
+    if (!text || sending) return;
+    sending = true;
+    els.send.disabled = true;
+    els.err.textContent = '';
+    try {
+      const r = await window.desktop.quickSend(text);
+      if (r.ok) {
+        els.text.value = '';
+        window.desktop.quickHide();
+      } else {
+        els.err.textContent = r.error || ('发送失败（HTTP ' + r.status + '）');
+      }
+    } catch (e) {
+      els.err.textContent = String(e && e.message || e);
+    } finally {
+      sending = false;
+      els.send.disabled = false;
+    }
+  }
+
+  els.send.addEventListener('click', submit);
+  // History navigation (ArrowUp/Down at the text edges), persisted per
+  // profile by the main process.
+  let histIndex = -1;
+  let draftBackup = null;
+  async function historyNav(dir) {
+    const ta = els.text;
+    if (dir < 0 && ta.selectionStart !== 0) return;
+    if (dir > 0 && ta.selectionEnd !== ta.value.length) return;
+    const hist = await window.desktop.quickHistory({ op: 'list' });
+    if (!hist || !hist.length) return;
+    if (dir < 0) {
+      if (histIndex === -1) { draftBackup = ta.value; histIndex = 0; }
+      else if (histIndex < hist.length - 1) histIndex += 1;
+      ta.value = hist[histIndex];
+    } else {
+      if (histIndex === -1) return;
+      histIndex -= 1;
+      ta.value = histIndex === -1 ? (draftBackup || '') : hist[histIndex];
+    }
+    ta.selectionStart = ta.selectionEnd = ta.value.length;
+  }
+  els.text.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') { window.desktop.quickHide(); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); historyNav(-1); }
+    else if (e.key === 'ArrowDown') { e.preventDefault(); historyNav(1); }
+    else if (e.key === 'Enter' && !e.ctrlKey && !e.shiftKey && !e.isComposing) {
+      e.preventDefault();
+      histIndex = -1;
+      submit();
+    }
+  });
+
+  // Main pushes the session label and file-drop prefills.
+  window.desktop.onQuickState((info) => { setSession(info); });
+  window.desktop.onQuickPrefill((paths) => {
+    const cur = els.text.value ? els.text.value.replace(/\s+$/, '') + '\n' : '';
+    els.text.value = cur + paths.map((p) => `"${p}"`).join(' ');
+    els.text.focus();
+    els.text.selectionStart = els.text.selectionEnd = els.text.value.length;
+  });
+  els.text.focus();
+</script>
+</body>
+</html>

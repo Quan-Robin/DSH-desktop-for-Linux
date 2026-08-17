@@ -4,6 +4,25 @@
 
 ## Unreleased
 
+- **新增：审批直达（伴生插件扩展）**——插件追踪审批/等待事件（`/api/state` 的 `pendingApproval`，事件类型走 ADAPTER 列表）并新增 `POST /api/approve`；桌面端窗口不在前台时弹系统通知 + 原生小弹窗（批准/拒绝/查看详情，501 时提示到主窗口操作）；**DS-pet 联动**：桌宠轮询同一接口，鱼提醒 + 弹窗直接批准/拒绝（仅摘要，高危建议看详情）——任一处处理后其余弹窗自动收起
+- **新增：会话调色板**——`Ctrl+Shift+P` 模糊搜索切换会话（● 未读标记：非当前会话有新完成轮时点亮，切换/查看即消除）；`Ctrl+Shift+F` 跨会话全文搜索（worker 线程解压扫描全部 session 文件，不卡主进程），结果带摘要、点击跳转
+- **新增：文件面板搜索/变更标签**——「搜索」：主进程 fs 文本扫描（同 ws-tree 噪声过滤，200 命中/1500 文件/256KB 上限），结果 `文件:行号` 点击预览；「变更」：只读 `git status`+`git diff`（分支、脏文件列表点击预览、diff 文本）
+- **新增：聊天路径直达**——Ctrl+点击对话中的文件路径 → 系统文件管理器定位该文件（复刻 dsh-pathlink 思路；纯监听不添加可见元素，仅工作区内路径生效）
+- **新增：快捷输入历史**——↑/↓ 翻阅（边缘光标触发），per-profile 持久化（50 条），切换 profile 清空
+- **新增：右侧文件面板（工作区浏览 + 引用 + token/耗费，免插件）**——原生复刻 dsh-workspace-explorer（MIT）的核心能力，以 Electron WebContentsView 右侧停靠（`Ctrl+Shift+E` / 托盘 / 页面右侧悬浮 📁 按钮切换，状态跨重启保留；主视图自动让位，旧版 Electron 降级为覆盖）：
+  - 懒加载文件树（噪声目录过滤、400 条截断、`[file: 相对路径]` 引用规则与原版一致——面板根=当前会话 cwd 时用相对路径，否则绝对路径）；单击文件引用入输入框（`[data-composer-card] textarea`，React 受控组件兼容：原生 input 事件），双击预览前 60 行（200KB/二进制标记）；工作区下拉可切换（当前会话 + 已注册工作区），📂 一键在系统文件管理器打开（仅限页面工作区服务上报过的目录）
+  - **统计条复用现有余额链路**：会话花费/本轮花费来自 balanceState（估算管线不变），当前会话 tokens 来自官方 `session.list` 的 `tokenUsage`（`doRefresh` 已拉取，现在存入 `balanceState.currentTokens` 暴露）
+  - 工作区状态由注入脚本从页面 `workspaces`/`sessions` 服务快照上报（2 秒轮询、变化才发）；文件树由主进程 Node fs 直接读取（`src/ws-tree.js`，路径段校验拒绝 `..` 穿越）
+- **新增：页内会话右键菜单 + 置顶会话（免插件）**——桌面壳直接向 dsh Web UI 注入（`src/inject/session-menu.js`，经页面自带的 `__ModuleLoader__` 加载，与社区插件同一契约；适配自 @baihejiangnan/dsh-session-context-menu v0.2.13，MIT）。会话/工作区/输入框/选中文本/链接的完整右键菜单，官方操作走官方组件；**与原版插件共存**：检测到已安装时自动让位，仅把「置顶会话」注册进其公开扩展注册表，不出现双菜单
+  - **置顶会话**：独立「📌 置顶」分区渲染在会话列表上方（不移动原列表行、不切换排序模式——未置顶会话保持按更新时间排序，即 Codex 式置顶分区语义）；状态存桌面端 config（`pinnedSessions`，上限 20），dsh 侧无感知、重启保留；条目点击经官方 `sessions.open()` 跳转，右键条目可打开/取消置顶；托盘「置顶的会话」子菜单可直达；切换 profile 自动清空（会话属于另一数据目录）
+  - 页面↔壳通信走 DOM 邮箱桥（`webview-preload.js`）：`CustomEvent.detail` 不跨 contextIsolation 隔离世界，载荷以 JSON 字符串经隐藏节点传递
+- **新增：伴生插件 dsh-plugin-desktop**——运行在 dsh 服务进程内（零 npm 依赖，拷贝即装），暴露 `GET /api/state`（当前会话、turn 状态、完成信号）、`GET /api/usage`（事件流实时聚合）、`POST /api/prompt`（发送通道）。安装入口：托盘菜单/设置页「安装伴生插件」，自动拷入 profile 并注册 cordis.patch.yml 后重启服务。装上后：当前会话感知不再嗅探 webRequest 请求体；dsh 插件 API 未文档化，宿主交互集中在三个 ADAPTER（事件总线/路由注册/prompt RPC），接真实 dsh 只需改三处（见 plugin/dsh-plugin-desktop/README.md）
+- **新增：全局快捷输入**（默认 `Ctrl+Shift+D`，config.json 的 `quickInputShortcut` 可改）——任意应用中唤出迷你输入条，Enter 直接发送到当前 dsh 会话（经插件通道）；dsh 无发送接口时回退聚焦主窗口。Esc 隐藏、失焦自动隐藏、Ctrl+Enter 换行
+- **新增：文件拖放兜底**——拖到窗口、页面未自行处理的文件不再触发系统打开（旧 `shell.openExternal(file://)` 行为），改为路径填入快捷输入
+- **新增：窗口状态记忆**——位置/大小/最大化跨重启保留；恢复时校验显示器布局（拔屏后回退默认，不再"窗口消失"）
+- **新增：`dsh://` deep link**——`dsh://open` 显示窗口；`dsh://session/<id>` 设为当前会话并聚焦（deb/AppImage 的 .desktop 已声明 scheme；便携版需手动在 .desktop 加 `MimeType=x-scheme-handler/dsh;`）
+- **新增：多 profile**——每个配置独立 DSH_HOME + 端口（不同账号/项目不串数据）；托盘「配置」子菜单与设置页均可切换/新增/删除；旧配置自动迁移为「默认」profile
+- **新增：测试基建**——`npm test`：desktop-utils（deep link/窗口钳制/profile/置顶列表）+ ws-tree（文件树纯逻辑+临时目录实测）+ 注入脚本 vm 冒烟测试×2（右键菜单/置顶分区、composer 插入/工作区上报）+ 插件 mock 测试
 - **修复（连续对话估算偏高）**：上一轮结束后、官方账单确认前（约 3 分钟）就开始下一轮时，基线仍停留在对话开始时的官方值——上一轮花费从未扣除，误差随轮数累积。现在新轮开始时基线重置为上一轮结束时的冻结估算（取与官方值的较小者，账单已落定或第三方消耗时以官方为准）
 - **清理**：移除已无触达路径的托盘「已自动重校准」菜单项及对应 i18n（自动重校准方案已于 0.1.36 移除）
 - **文案**：余额说明（balNote）同步为对话感知估算模型的新语义（主进程与 balance.html 两处、中英双语）
