@@ -443,6 +443,12 @@ function disableDshPlugin(pluginId, patchFile) {
   }
 }
 
+// Plugin-failure self-heal state (shared by the exit-code path in startDsh
+// and the page-probe path in createWindow): guard against stacked prompts and
+// against re-offering the same plugin after the user disabled it.
+let pluginPromptOpen = false;
+let recentlyDisabledPlugin = null;
+
 function startDsh() {
   const isBundled = config.dshCommand === 'bundled';
   let args;
@@ -489,8 +495,6 @@ function startDsh() {
     dshProc = null;
     if (!quitting) showFatal(t('spawnFail', { err: err.message }));
   });
-  let pluginPromptOpen = false; // guard: never stack plugin prompts
-  let recentlyDisabledPlugin = null; // loop guard: re-failing after disable → stop
   proc.on('exit', (code, signal) => {
     const unexpected = dshProc === proc;
     dshProc = null;
@@ -687,10 +691,55 @@ function createWindow() {
   // Inject the in-page session menu/pins whenever the dsh UI (re)loads. The
   // script self-guards against double injection and retries __ModuleLoader__
   // on its own; runs only for the app origin (the loading page is a data: URL).
+  // Detect the dsh "Failed to load plugins" page and offer to disable the
+  // failing plugin. dsh keeps serving HTTP (exit 0) even when a plugin fails
+  // to load, so the exit-code self-heal never fires for these — the page is
+  // the only reliable signal. Debounced to avoid re-probing every navigation.
+  let failProbeTimer = null;
+  const probePluginFailPage = () => {
+    try {
+      const u = new URL(mainView.webContents.getURL());
+      if (u.origin !== new URL(appUrl()).origin) return;
+      clearTimeout(failProbeTimer);
+      failProbeTimer = setTimeout(() => {
+        mainView.webContents.executeJavaScript(
+          `(() => { const t = document.body && document.body.innerText || ''; return /failed to load plugins/i.test(t) ? t.slice(0, 2000) : ''; })()`,
+          true,
+        ).then((text) => {
+          if (!text) return;
+          const plugin = detectFailedPlugin(text);
+          if (!plugin || plugin.id === recentlyDisabledPlugin) return;
+          pluginPromptOpen = true;
+          try {
+            const opts = {
+              type: 'warning',
+              buttons: [t('pluginDisableRestart'), t('pluginSkip')],
+              defaultId: 0,
+              cancelId: 1,
+              noLink: true,
+              message: t('pluginFailMsg', { id: plugin.id }),
+            };
+            const w = win && !win.isDestroyed() ? win : undefined;
+            const disable = (w ? dialog.showMessageBoxSync(w, opts) : dialog.showMessageBoxSync(opts)) === 0;
+            if (disable && disableDshPlugin(plugin.id)) {
+              recentlyDisabledPlugin = plugin.id;
+              notify(t('pluginDisabledTitle'), t('pluginDisabledBody', { id: plugin.id }));
+              setTimeout(boot, 1500);
+            }
+          } finally {
+            pluginPromptOpen = false;
+          }
+        }).catch(() => { /* page still loading or navigated away */ });
+      }, 2500);
+    } catch { /* not a URL yet */ }
+  };
   const injectIfAppOrigin = () => {
     try {
       const u = new URL(mainView.webContents.getURL());
-      if (u.origin === new URL(appUrl()).origin) injectSessionMenu();
+      if (u.origin === new URL(appUrl()).origin) {
+        injectSessionMenu();
+        probePluginFailPage();
+      }
     } catch { /* not a URL yet */ }
   };
   mainView.webContents.on('did-finish-load', injectIfAppOrigin);
