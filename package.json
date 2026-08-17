@@ -1,6 +1,6 @@
 {
   "name": "deepseek-harness-desktop",
-  "version": "0.1.36",
+  "version": "0.1.37",
   "description": "Desktop shell for DeepSeek Harness (dsh) — embeds the dsh Web UI in an Electron window with tray and process management",
   "main": "src/main.js",
   "license": "MIT",
@@ -33,7 +33,9 @@
     "protocols": [
       {
         "name": "DeepSeek Harness deep link",
-        "schemes": ["dsh"]
+        "schemes": [
+          "dsh"
+        ]
       }
     ],
     "directories": {

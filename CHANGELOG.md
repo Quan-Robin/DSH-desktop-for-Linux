@@ -3,17 +3,7 @@
 本项目的版本更新说明。发布 GitHub Release 时同步引用本文件对应条目。
 
 
-
-## 0.1.37 (2026-08-17)
-
-- **右侧边栏浅色重写（对照 Reasonix/Codex 截图）**：`files-panel.html` 改为浅色主题，采用「概览 / 文件 / 改动」三个 tab；概览展示会话费用、本轮费用、tokens in/cache/out、命中率进度条、官方/估算余额（仅展示现有数据，省略无数据源的上下文窗口/按来源分析）；搜索并入文件 tab 顶部「筛选文件…」输入框（输入即内容搜索，清空恢复文件树）；文件树/引用/预览/改动 tab 功能保持。新增 `test/files-panel.test.mjs` 结构契约测试并纳入 `npm test`。
-- **DS-pet 会话状态同步实机验证记录**：插件 README 增加 2026-08-17 真实 dsh 双向切换验证（`/api/session.history` → webRequest 嗅探 → `POST /api/set-session` → `/api/state` 刷新）。
-
-## 0.1.37 (2026-08-17)
-
-- **DS-pet 会话状态修复**：dsh Web UI 内切换会话时，桌面壳始终用 webRequest 观察 `/api/session.*`，并通过插件新增的 `POST /api/set-session` 同步到 `/api/state`；DS-pet 轮询到的 `currentSessionId` 从此跟随用户实际查看的会话（此前插件可用时桌面停止嗅探，导致状态停留在服务器事件）。
-
-## Unreleased
+## 0.1.37 (2026-08-18)
 
 - **修复（真实 dsh 适配，伴生插件）**：Linux 真机验证中发现并修复 dsh 插件 API 假设——安装 patch 由 `include:` 改为 `insert:` 并注入 `webServer`/`apiProxy`；事件总线改用 `session/event` + `session/created`；HTTP 路由改用 `webServer.register`；`/api/prompt` 改走 `apiProxy.sessions.prompt`；`/api/approve` 通过 `approval/request` answerer 直接审批。移除不兼容的 `ctx.desktopPlugin` 赋值。
 - **修复（真实 dsh 页内注入/搜索/文件面板）**：全文搜索补上 `data.content` 数组提取；`__ModuleLoader__.load` 在真实 dsh 只注册不执行，页内右键菜单/置顶/文件面板悬浮按钮改为直接 DOM 启动；主进程补充当前会话 cwd 工作区回退，文件面板无需页面上报也能显示当前工作区文件。
@@ -39,6 +29,14 @@
 - **修复（连续对话估算偏高）**：上一轮结束后、官方账单确认前（约 3 分钟）就开始下一轮时，基线仍停留在对话开始时的官方值——上一轮花费从未扣除，误差随轮数累积。现在新轮开始时基线重置为上一轮结束时的冻结估算（取与官方值的较小者，账单已落定或第三方消耗时以官方为准）
 - **清理**：移除已无触达路径的托盘「已自动重校准」菜单项及对应 i18n（自动重校准方案已于 0.1.36 移除）
 - **文案**：余额说明（balNote）同步为对话感知估算模型的新语义（主进程与 balance.html 两处、中英双语）
+
+- **修复（插件自愈三连）**：① 自愈禁用的插件 id 改为包名优先（loader entry hash 每次重启变化，写 hash 永远无效）；② 自愈同时探测 dsh 页面 'Failed to load plugins'（插件加载失败时 dsh 进程并不退出，exit-code 路径永不触发）；③ disableDshPlugin 对 bundle 内插件直接改 profile package.json 移除（patch 层拦不住 bundle）
+- **性能（会话解析提速 ~20x）**：zstd 解压改用系统 `zstd` CLI（C 实现），fzstd 降级备用——首扫 16.2s → 0.7s，消除启动/查余额时 UI 卡死（worker 占满单核 ~15s）
+- **修复（窗口首启）**：WebContentsView 首帧无 bounds → 窗口空白透明直到手动 resize——创建即显式 setBounds + show 后重新布局；show:false/ready-to-show 在 WebContentsView 架构下不触发导致窗口不显示，恢复 show:true + 短 tick 兜底
+- **修复（托盘）**：① createTray 每次重建 SNI（applyMenus 周期性调用）→ 多图标各带菜单，改为单 SNI 热更新；② SNI 注册用唯一递增服务名 + watcher 交互加超时（挂死则无托盘）；③ 托盘菜单结构恒定（`安装伴生插件`↔`重装伴生插件` label 切换、不增删项）——修复 GNOME dbusmenu 对运行中菜单增删的渲染残留（灰色错位项/分隔符漂移/'——'幽灵项）
+- **修复（伴生插件）**：① asar 内安装路径（`__dirname` 优先，之前 `..` 落在 resources/ 永远找不到）；② 复制改逐文件 readFileSync/writeFileSync（asar 虚拟 FS cpSync 不可靠）；③ client bundle 以插件本名 `dsh-plugin-desktop` 注册（否则 'loaded without registering'）
+- **修复（置顶/右键）**：未置顶会话不再显示`取消置顶`；置顶标题剥离 '· 2小时前' 相对时间；官方右键插件存在时注入脚本自动让位（不双菜单、注册置顶为其扩展）
+- **发布**：伴生插件独立仓库 [dsh-plugin-desktop](https://github.com/Quan-Robin/dsh-plugin-desktop)（`dsh-plugin` 话题，`dsh plugin add github:Quan-Robin/dsh-plugin-desktop` 安装）；README 单列该插件为可选增强（大部分桌面端功能 + 小部分插件功能）
 
 ## 0.1.36 (2026-08-16)
 
