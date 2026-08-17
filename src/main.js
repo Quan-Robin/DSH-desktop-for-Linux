@@ -1205,7 +1205,11 @@ async function probePlugin(force) {
 // cordis.patch.yml (same recovery path disableDshPlugin uses). Zero npm deps,
 // so a plain directory copy is a complete install.
 function installDesktopPlugin() {
-  const src = [process.resourcesPath, path.join(__dirname, '..')]
+  // Packaged: plugin ships inside app.asar at <root>/plugin/dsh-plugin-desktop,
+  // so __dirname (="resources/app.asar") itself is the app root — a ".." step
+  // from here lands in resources/, where the plugin is NOT present. Dev runs
+  // have __dirname = the repo root. Try __dirname first, then the old paths.
+  const src = [__dirname, process.resourcesPath, path.join(__dirname, '..')]
     .filter(Boolean)
     .map((root) => path.join(root, 'plugin', 'dsh-plugin-desktop'))
     .find((p) => fs.existsSync(path.join(p, 'lib', 'index.js')));
@@ -1218,7 +1222,20 @@ function installDesktopPlugin() {
   try {
     fs.mkdirSync(path.dirname(dest), { recursive: true });
     fs.rmSync(dest, { recursive: true, force: true });
-    fs.cpSync(src, dest, { recursive: true });
+    // Copy the plugin out of the asar. Electron's fs is asar-aware for reads,
+    // but cpSync of a directory tree out of an asar is unreliable — walk and
+    // copy file by file with readFileSync/writeFileSync instead.
+    const files = ['lib/index.js', 'package.json', 'README.md', 'test/run.mjs'];
+    fs.mkdirSync(dest, { recursive: true });
+    for (const rel of files) {
+      const s = path.join(src, rel);
+      const d = path.join(dest, rel);
+      try {
+        const buf = fs.readFileSync(s);
+        fs.mkdirSync(path.dirname(d), { recursive: true });
+        fs.writeFileSync(d, buf);
+      } catch { /* missing optional file — skip */ }
+    }
     // Register in the loader patch — append `- include: dsh-plugin-desktop`
     // unless an entry is already there.
     const patch = path.join(profileRoot, 'cordis.patch.yml');

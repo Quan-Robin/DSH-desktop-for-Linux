@@ -228,6 +228,44 @@
   var menu = null;
   function close() { if (menu) { menu.remove(); menu = null; } }
 
+  // DOM-only right-click menu used when sessions/workspaces services are
+  // unavailable (directStart path: __ModuleLoader__ registers the factory but
+  // does not run it, so ctx services stay null). Provides the actions that do
+  // not need the service APIs: text select/copy and reload.
+  function buildDomOnlyMenu(event) {
+    var editable = editableFrom(event.target);
+    var selection = selectedText(editable).trim();
+    if (!editable && !selection) return; // nothing actionable without services
+    event.preventDefault();
+    event.stopPropagation();
+    close();
+    var root = document.createElement('div');
+    root.className = 'dshcm-menu';
+    root.setAttribute('role', 'menu');
+    root.style.visibility = 'hidden';
+    document.body.appendChild(root);
+    menu = root;
+    if (editable) {
+      add(root, '撤销', function () { editable.focus(); if (!document.execCommand('undo')) throw new Error('请使用 Ctrl+Z 撤销'); }, 'Ctrl+Z');
+      add(root, '重做', function () { editable.focus(); if (!document.execCommand('redo')) throw new Error('请使用 Ctrl+Y 重做'); }, 'Ctrl+Y');
+      split(root);
+      add(root, '剪切', function () { if (selection) copy(selection, '已剪切'); replaceSelection(editable, ''); }, 'Ctrl+X');
+      add(root, '复制', function () { return copy(selection, '已复制'); }, 'Ctrl+C');
+      add(root, '粘贴', function () { return readClipboard().then(function (text) { replaceSelection(editable, text); }); }, 'Ctrl+V');
+      split(root);
+      add(root, '全选', function () {
+        editable.focus();
+        if (editable instanceof HTMLInputElement || editable instanceof HTMLTextAreaElement) editable.select();
+        else selectSurface(editable);
+      }, 'Ctrl+A');
+    } else if (selection) {
+      add(root, '复制所选文本', function () { return copy(selection, '已复制'); }, 'Ctrl+C');
+    }
+    split(root);
+    add(root, '刷新', function () { globalThis.location.reload(); }, 'Ctrl+R');
+    positionMenu(root, event);
+  }
+
   function add(root, label, run, shortcut) {
     var button = document.createElement('button');
     button.type = 'button';
@@ -259,6 +297,13 @@
     node.className = 'dshcm-separator';
     node.setAttribute('role', 'separator');
     root.appendChild(node);
+  }
+
+  function positionMenu(root, event) {
+    var rect = root.getBoundingClientRect();
+    root.style.left = Math.max(6, Math.min(event.clientX, innerWidth - rect.width - 6)) + 'px';
+    root.style.top = Math.max(6, Math.min(event.clientY, innerHeight - rect.height - 6)) + 'px';
+    root.style.visibility = 'visible';
   }
 
   function position(root, event) {
@@ -633,7 +678,13 @@
     }
     var sessions = sessionsService;
     var workspaces = workspacesService;
-    if (!sessions || !workspaces) return;
+    var servicesAbsent = !sessions || !workspaces;
+    if (servicesAbsent) {
+      // directStart path: __ModuleLoader__ only registers the factory, it does
+      // not run it here, so sessions/workspaces may be null. Build a DOM-only
+      // menu (no service calls) so right-click still works.
+      return buildDomOnlyMenu(event);
+    }
     var row = rowFrom(event.target);
     var domSessionWorkspace = row && workspaceFrom(event.target, workspaces);
     var session = row && resolveSession(sessions, row, domSessionWorkspace && domSessionWorkspace.workspace);
