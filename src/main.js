@@ -686,10 +686,9 @@ function createWindow() {
     // First startup: the view is blank until the (loading) page paints; an
     // unpainted BrowserWindow on some compositors renders transparent with
     // ghosting until a resize forces a repaint. Paint the window bg from the
-    // start and only show it once the first frame is ready, so no transparent
-    // frame is ever composited.
+    // start (matches the loading/fatal pages).
     backgroundColor: '#0d1117',
-    show: false,
+    show: true,
     webPreferences: {
       preload: path.join(__dirname, 'webview-preload.js'),
       contextIsolation: true,
@@ -700,6 +699,10 @@ function createWindow() {
   if (ws.maximized) win.maximize();
   // Show only once the first frame is ready (no transparent startup frame).
   win.once('ready-to-show', () => { if (win && !win.isDestroyed() && !win.isVisible()) win.show(); });
+  // ready-to-show may never fire here: the real content lives in a
+  // WebContentsView (the window's own webContents stays empty), so show the
+  // window after a short tick instead of waiting on it.
+  setTimeout(() => { if (win && !win.isDestroyed() && !win.isVisible()) win.show(); }, 300);
   // First-run layout: the main view has no bounds until layoutFilesPanel runs
   // (it is only called on resize/toggle) — lay it out immediately or the first
   // frame is an empty transparent window until the user manually resizes.
@@ -716,6 +719,11 @@ function createWindow() {
     },
   });
   win.contentView.addChildView(mainView);
+  // Give the view an explicit initial size immediately — layoutFilesPanel()
+  // below also runs, but this guarantees the first paint has real bounds even
+  // before resize/layout events fire (a bounds-less view composites as an
+  // empty transparent window until the user resizes).
+  try { mainView.setBounds({ x: 0, y: 0, width: ws.width, height: ws.height }); } catch { /* noop */ }
   // Same reason as the window backgroundColor: an unpainted view can composite
   // as transparent with trailing ghost images until a repaint.
   mainView.setBackgroundColor('#0d1117');
@@ -2075,6 +2083,7 @@ function trayMenuItems() {
 }
 
 function createTray() {
+  console.log('[tray] createTray: wayland=', !!process.env.WAYLAND_DISPLAY, 'xdg=', process.env.XDG_SESSION_TYPE);
   if (process.platform === 'linux' && process.env.WAYLAND_DISPLAY) {
     // Wayland: Electron's Tray SNI is broken (fake IconName, unreadable
     // IconPixmap) — use our own StatusNotifierItem instead.

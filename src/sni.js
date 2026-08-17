@@ -244,11 +244,11 @@ async function createSniTray({ iconPath, title, menuItems, onActivate, onSeconda
     return reply.body && reply.body[0] && reply.body[0].value ? reply.body[0].value : [];
   };
   for (let attempt = 0; attempt < 4; attempt++) {
-    await bus.call(register);
+    try { await withTimeout(bus.call(register), 2000); } catch { /* watcher may be slow — keep trying */ }
     await sleep(1500); // give the shell time to probe and record us
     try {
       // The watcher records items as "<unique-name>@<path>".
-      if ((await listItems()).some((item) => item.startsWith(bus.name + '@'))) {
+      if ((await withTimeout(listItems(), 2000)).some((item) => item.startsWith(bus.name + '@'))) {
         return {
           serviceName,
           pixmap: iface._pixmap,
@@ -263,6 +263,13 @@ async function createSniTray({ iconPath, title, menuItems, onActivate, onSeconda
     } catch { /* keep trying */ }
   }
   throw new Error('StatusNotifierWatcher did not record the item after 4 attempts');
+}
+
+function withTimeout(promise, ms) {
+  return new Promise((resolve, reject) => {
+    const t = setTimeout(() => reject(new Error('timeout')), ms);
+    promise.then((v) => { clearTimeout(t); resolve(v); }, (e) => { clearTimeout(t); reject(e); });
+  });
 }
 
 module.exports = { createSniTray };
