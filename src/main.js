@@ -1220,11 +1220,24 @@ const FILES_PANEL_W = 280;
 function layoutFilesPanel() {
   if (!win || win.isDestroyed()) return;
   const [w, h] = win.getContentSize();
+  // Always try to resize the main view so the panel doesn't overlap.
+  // If contentView.children is not available (older Electron), the panel
+  // overlays the page, which is acceptable but not ideal.
   try {
     const main = win.contentView.children.find((c) => c.webContents === win.webContents);
-    if (main) main.setBounds({ x: 0, y: 0, width: filesView ? Math.max(200, w - FILES_PANEL_W) : w, height: h });
-  } catch { /* older Electron: panel overlays the page instead of resizing it */ }
-  if (filesView) filesView.setBounds({ x: Math.max(200, w - FILES_PANEL_W), y: 0, width: FILES_PANEL_W, height: h });
+    if (main) {
+      main.setBounds({ x: 0, y: 0, width: filesView ? Math.max(200, w - FILES_PANEL_W) : w, height: h });
+    }
+  } catch { /* older Electron: panel overlays the page */ }
+  if (filesView) {
+    const panelX = w - FILES_PANEL_W;
+    const panelW = FILES_PANEL_W;
+    filesView.setBounds({ x: Math.max(0, panelX), y: 0, width: panelW, height: h });
+    // Set a background color so the panel is visually distinct
+    if (filesView.webContents) {
+      filesView.webContents.insertCSS('body { background: var(--dsw-alias-bg-layer-2, #f5f5f5); }');
+    }
+  }
 }
 
 function toggleFilesPanel(on) {
@@ -1594,7 +1607,7 @@ async function doRefresh() {
   // Official balance first — show it as soon as it resolves.
   const officialRes = await officialP;
   if (officialRes.error) {
-    if (officialRes.error === t('balNoKey')) balanceState.official = null;
+    balanceState.official = null;
     balanceState.error = officialRes.error;
   } else {
     balanceState.official = officialRes.bal.total;
