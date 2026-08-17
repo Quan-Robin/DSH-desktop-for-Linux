@@ -4,6 +4,7 @@
 
 ## Unreleased
 
+- **修复（真实 dsh 适配，伴生插件）**：Linux 真机验证中发现并修复 dsh 插件 API 假设——安装 patch 由 `include:` 改为 `insert:` 并注入 `webServer`/`apiProxy`；事件总线改用 `session/event` + `session/created`；HTTP 路由改用 `webServer.register`；`/api/prompt` 改走 `apiProxy.sessions.prompt`；`/api/approve` 通过 `approval/request` answerer 直接审批。移除不兼容的 `ctx.desktopPlugin` 赋值。
 - **新增：审批直达（伴生插件扩展）**——插件追踪审批/等待事件（`/api/state` 的 `pendingApproval`，事件类型走 ADAPTER 列表）并新增 `POST /api/approve`；桌面端窗口不在前台时弹系统通知 + 原生小弹窗（批准/拒绝/查看详情，501 时提示到主窗口操作）；**DS-pet 联动**：桌宠轮询同一接口，鱼提醒 + 弹窗直接批准/拒绝（仅摘要，高危建议看详情）——任一处处理后其余弹窗自动收起
 - **新增：会话调色板**——`Ctrl+Shift+P` 模糊搜索切换会话（● 未读标记：非当前会话有新完成轮时点亮，切换/查看即消除）；`Ctrl+Shift+F` 跨会话全文搜索（worker 线程解压扫描全部 session 文件，不卡主进程），结果带摘要、点击跳转
 - **新增：文件面板搜索/变更标签**——「搜索」：主进程 fs 文本扫描（同 ws-tree 噪声过滤，200 命中/1500 文件/256KB 上限），结果 `文件:行号` 点击预览；「变更」：只读 `git status`+`git diff`（分支、脏文件列表点击预览、diff 文本）

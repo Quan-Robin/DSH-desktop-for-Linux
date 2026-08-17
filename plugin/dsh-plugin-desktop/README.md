@@ -23,7 +23,12 @@ DSH-desktop-for-Linux 的伴生插件。运行在 dsh 服务进程内，把桌�
 `$DSH_HOME/profiles/web/cordis.patch.yml` 追加：
 
 ```yaml
-- include: dsh-plugin-desktop
+- insert:
+    - id: dsh-plugin-desktop
+      name: dsh-plugin-desktop
+      inject:
+        - webServer
+        - apiProxy
 ```
 
 然后重启 dsh 服务。手动验证：`curl http://127.0.0.1:3080/api/state`。
@@ -38,8 +43,8 @@ ADAPTER 函数里，全部是"尝试多种可能形态、逐个降级"的写法�
 3. **`PROMPT_SHAPES`** — 发消息 RPC：`ctx.server.call('session.prompt')` 等
 
 接真实 dsh 时只需要改这三个列表；聚合逻辑（`Tracker`）不依赖任何宿主 API。
-`GET /api/state` 不暴露适配诊断（保持响应精简），可用 `ctx.desktopPlugin()`
-在进程内查询哪个形态挂接成功。
+`GET /api/state` 不暴露适配诊断（保持响应精简），可用插件 apply 返回的
+`report()` 在进程内查询哪个形态挂接成功。
 
 零 npm 依赖是有意为之：桌面端直接拷贝目录安装，无需 npm/网络。
 

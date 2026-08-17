@@ -1134,8 +1134,8 @@ function installDesktopPlugin() {
     let text = '';
     try { text = fs.readFileSync(patch, 'utf8'); } catch { text = '[]\n'; }
     if (!/dsh-plugin-desktop/.test(text)) {
-      if (/^\[\]\s*$/m.test(text)) text = text.replace(/^\[\]\s*$/m, '- include: dsh-plugin-desktop');
-      else text = text.replace(/\s*$/, '\n') + '- include: dsh-plugin-desktop\n';
+      if (/^\[\]\s*$/m.test(text)) text = text.replace(/^\[\]\s*$/m, '- insert:\n    - id: dsh-plugin-desktop\n      name: dsh-plugin-desktop\n      inject:\n        - webServer\n        - apiProxy');
+      else text = text.replace(/\s*$/, '\n') + '- insert:\n    - id: dsh-plugin-desktop\n      name: dsh-plugin-desktop\n      inject:\n        - webServer\n        - apiProxy\n';
       fs.writeFileSync(patch, text);
     }
     return true;

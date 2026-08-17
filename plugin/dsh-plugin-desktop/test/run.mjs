@@ -11,7 +11,7 @@ function makeMockCtx() {
   return {
     calls: [],
     on(name, fn) { listeners.set(name, fn); return () => listeners.delete(name); },
-    emit(name, ev) { const fn = listeners.get(name); if (fn) fn(ev); },
+    emit(name, ...args) { const fn = listeners.get(name); if (fn) fn(...args); },
     server: {
       get(path, fn) { routes.get(path).handler = fn; },
       post(path, fn) { routes.get(path).handler = fn; },
@@ -45,11 +45,11 @@ assert.strictEqual(diag.routes.attached, true, 'route adapter should attach');
 // --- event aggregation (mirrors the scenario from the desktop's conv test) ---
 const S = 'session-abc';
 const ev = (type, data, seq) => ({ type, data, seq, sessionId: S });
-ctx.emit('dsh/event', ev('request/header', { header: { config: { model: 'deepseek-v4-flash' }, session: { id: S } } }));
-ctx.emit('dsh/event', ev('user/message', {}));
-ctx.emit('dsh/event', ev('assistant/chunk', { chunk: { usage: { inputTokens: 1000, cacheReadTokens: 500, outputTokens: 200 } } }));
-ctx.emit('dsh/event', ev('assistant/message', { message: { content: [{ type: 'text', text: '你好呀' }] } }));
-ctx.emit('dsh/event', ev('turn/end', {}, 3));
+ctx.emit('session/event', { id: S }, ev('request/header', { header: { config: { model: 'deepseek-v4-flash' }, session: { id: S } } }));
+ctx.emit('session/event', { id: S }, ev('user/message', {}));
+ctx.emit('session/event', { id: S }, ev('assistant/chunk', { chunk: { usage: { inputTokens: 1000, cacheReadTokens: 500, outputTokens: 200 } } }));
+ctx.emit('session/event', { id: S }, ev('assistant/message', { message: { content: [{ type: 'text', text: '你好呀' }] } }));
+ctx.emit('session/event', { id: S }, ev('turn/end', {}, 3));
 
 let r = await ctx.request('GET', '/api/state');
 assert.deepStrictEqual([r.status, r.json.currentSessionId, r.json.turn, r.json.lastTurnEndSeq, r.json.lastSummary],
@@ -63,8 +63,8 @@ assert.deepStrictEqual(sess.userMsgByModel['deepseek-v4-flash'], { input: 1000, 
 assert.strictEqual(r.json.complete, false);
 
 // new user message resets the turn accumulation only
-ctx.emit('dsh/event', ev('user/message', {}));
-ctx.emit('dsh/event', ev('assistant/chunk', { chunk: { usage: { inputTokens: 10, outputTokens: 5 } } }));
+ctx.emit('session/event', { id: S }, ev('user/message', {}));
+ctx.emit('session/event', { id: S }, ev('assistant/chunk', { chunk: { usage: { inputTokens: 10, outputTokens: 5 } } }));
 r = await ctx.request('GET', '/api/usage');
 const s2 = r.json.sessions.find((x) => x.id === S);
 assert.deepStrictEqual(s2.userMsgByModel['deepseek-v4-flash'], { input: 10, cacheRead: 0, output: 5, reasoning: 0 }, 'turn cost resets on user/message');
@@ -98,7 +98,7 @@ assert.strictEqual(res.report().events.attached, false);
 assert.strictEqual(res.tracker.state().currentSessionId, null);
 
 // --- approval lifecycle: request → pending in state → approve clears ---
-ctx.emit('dsh/event', ev('tool/approval', { summary: 'rm -rf build' }, 7));
+ctx.emit('session/event', { id: S }, ev('tool/approval', { summary: 'rm -rf build' }, 7));
 r = await ctx.request('GET', '/api/state');
 assert.deepStrictEqual(
   [r.json.pendingApproval.id, r.json.pendingApproval.summary],
@@ -106,12 +106,12 @@ assert.deepStrictEqual(
   `pending approval surfaced: ${JSON.stringify(r.json.pendingApproval)}`,
 );
 // user/message clears it (the user answered in the web UI)
-ctx.emit('dsh/event', ev('user/message', {}, 8));
+ctx.emit('session/event', { id: S }, ev('user/message', {}, 8));
 r = await ctx.request('GET', '/api/state');
 assert.strictEqual(r.json.pendingApproval, null, 'user/message clears pending approval');
 
 // approve via endpoint with a fresh request
-ctx.emit('dsh/event', ev('approval/request', { id: 'apr-1', title: 'write file' }, 9));
+ctx.emit('session/event', { id: S }, ev('approval/request', { id: 'apr-1', title: 'write file' }, 9));
 r = await ctx.request('POST', '/api/approve', { decision: 'approve' });
 assert.strictEqual(r.status, 200, `approve ok: ${JSON.stringify(r.json)}`);
 assert.deepStrictEqual(ctx.server._rpc, { method: 'tool.approve', params: { id: 'apr-1', decision: 'approve' } });
@@ -129,8 +129,57 @@ noRpc.server._rpcs = [];
 delete noRpc.server.call;
 noRpc.server.call = null;
 plugin.apply(noRpc);
-noRpc.emit('dsh/event', ev('tool/approval', { summary: 'x' }, 1));
+noRpc.emit('session/event', { id: S }, ev('tool/approval', { summary: 'x' }, 1));
 r = await noRpc.request('POST', '/api/approve', { decision: 'reject' });
 assert.strictEqual(r.status, 501, 'missing approval RPC → 501');
+
+// --- real dsh shapes: webServer + apiProxy + approval/request answerer ---
+function makeRealCtx() {
+  const routes = new Map();
+  const listeners = new Map();
+  const promptCalls = [];
+  const ctx = {
+    effect(fn) { return fn(); },
+    webServer: {
+      register(route) { routes.set(route.path, route); return () => routes.delete(route.path); },
+    },
+    apiProxy: {
+      sessions: {
+        prompt: async (req) => { promptCalls.push(req); return { rpcId: req.rpcId, result: { ok: true, value: { accepted: true } } }; },
+      },
+    },
+    on(name, fn) { listeners.set(name, fn); return () => listeners.delete(name); },
+    emit(name, ...args) { const fn = listeners.get(name); if (fn) return fn(...args); },
+    async request(method, path, body) {
+      const route = routes.get(path);
+      if (!route) return { status: 404 };
+      const req = { url: path, on(ev, cb) { if (ev === 'data' && body !== undefined) cb(JSON.stringify(body)); if (ev === 'end') cb(); } };
+      const res = { status: 200, body: '', writeHead(status) { this.status = status; }, end(payload) { this.body = payload; } };
+      await route.handler(req, res);
+      return { status: res.status, json: JSON.parse(res.body) };
+    },
+    promptCalls,
+  };
+  return ctx;
+}
+
+{
+  const real = makeRealCtx();
+  const app = plugin.apply(real);
+  assert.strictEqual(app.report().routes.attached, true, 'real webServer route adapter should attach');
+  real.emit('session/event', { id: 'session-real' }, { type: 'user/message', data: {}, seq: 1 });
+  let r = await real.request('GET', '/api/state');
+  assert.strictEqual(r.json.currentSessionId, 'session-real', 'session/event shape should update current session');
+  r = await real.request('POST', '/api/prompt', { sessionId: 'session-real', text: 'hi' });
+  assert.strictEqual(r.status, 200, 'prompt via apiProxy should succeed');
+  assert.strictEqual(real.promptCalls.length, 1, 'apiProxy.sessions.prompt should be called');
+  assert.strictEqual(real.promptCalls[0].payload.sessionId, 'session-real');
+  assert.strictEqual(real.promptCalls[0].payload.content[0].text, 'hi');
+
+  const approvalPromise = real.emit('approval/request', { agent: { session: { id: 'session-real' } }, toolName: 'bash', reason: 'run command' });
+  r = await real.request('POST', '/api/approve', { decision: 'approve' });
+  assert.strictEqual(r.status, 200, 'approve via approval/request answerer should succeed');
+  assert.strictEqual(await approvalPromise, 'allowed-once', 'approval request should resolve allowed-once');
+}
 
 console.log('dsh-plugin-desktop mock tests OK');

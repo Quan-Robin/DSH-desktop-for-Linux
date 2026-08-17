@@ -1,4 +1,5 @@
 'use strict';
+const { randomUUID } = require('node:crypto');
 // dsh-plugin-desktop — companion plugin for DSH-desktop-for-Linux.
 //
 // Why this exists: the desktop shell used to (a) sniff webRequest bodies to
@@ -62,12 +63,14 @@ const SESSION_ID_PATHS = [
 ];
 
 // ── ADAPTER: approval event names (extend when adapting to a real dsh) ────
+let pendingApprovalResolver = null;
+
 const APPROVAL_REQUEST_TYPES = new Set([
-  'tool/approval', 'tool/approval:request', 'approval/request',
+  'tool/approval', 'tool/approval:request', 'approval/request', 'approval/asked',
   'permission/request', 'session/question', 'tool/waiting',
 ]);
 const APPROVAL_CLEAR_TYPES = new Set([
-  'tool/approval:response', 'approval/response', 'approval:resolve',
+  'tool/approval:response', 'approval/response', 'approval:resolve', 'approval/decided',
   'permission/response', 'session/answer',
 ]);
 
@@ -162,7 +165,7 @@ class Tracker {
     const t = ev.type || '';
     if (APPROVAL_REQUEST_TYPES.has(t)) {
       const summary = ev.data?.summary || ev.data?.approval?.summary
-        || ev.data?.title || ev.data?.tool
+        || ev.data?.reason || ev.data?.toolName || ev.data?.title || ev.data?.tool
         || (ev.data?.input ? JSON.stringify(ev.data.input).slice(0, 120) : '')
         || t;
       this.pendingApproval = {
@@ -217,6 +220,25 @@ class Tracker {
 // Names/shapes tried, in order. Replace with the real one when dsh documents
 // its plugin API; keep onEvent() as the handler.
 const EVENT_BUS_SHAPES = [
+  // Real dsh emits session-scoped events: ctx.on('session/event', (session, event)).
+  // Enrich each event with the session id so association does not depend on the
+  // payload carrying it; also observe session/created so a fresh session becomes
+  // the current one immediately.
+  (ctx, handler) => {
+    if (typeof ctx.on !== 'function') return false;
+    const offs = [];
+    const offEvent = ctx.on('session/event', (session, event) => {
+      const sid = session?.id || session?.header?.id;
+      handler({ ...event, sessionId: sid });
+    });
+    offs.push(typeof offEvent === 'function' ? offEvent : () => {});
+    const offCreated = ctx.on('session/created', (session) => {
+      const sid = session?.id || session?.header?.id;
+      handler({ type: 'session/created', data: { sessionId: sid } });
+    });
+    offs.push(typeof offCreated === 'function' ? offCreated : () => {});
+    return () => offs.forEach((off) => off());
+  },
   (ctx, handler) => ctx.on('dsh/event', handler),
   (ctx, handler) => ctx.on('session/event', handler),
   (ctx, handler) => ctx.on('event', (type, payload) => handler({ type, data: payload })),
@@ -240,10 +262,38 @@ function tryAttachEvents(ctx, tracker) {
 }
 
 // ── ADAPTER: HTTP routes ─────────────────────────────────────────────────
-// Koa-style `ctx.server.get/post(path, fn)` first, then router-style
+// Current dsh exposes the `webServer` service: register({ kind, path,
+// handler }) with node:http req/res. Older/alternative builds may expose
+// Koa-style `ctx.server.get/post(path, fn)` or router-style
 // `ctx.router.get/post`. Handlers are framework-agnostic: they receive
 // ({ query, body, params }) and return { status, json }.
+function readJsonBody(req) {
+  return new Promise((resolve, reject) => {
+    let data = '';
+    req.on('data', (c) => { data += c; if (data.length > 1_000_000) { reject(new Error('body too large')); req.destroy(); } });
+    req.on('end', () => { try { resolve(data ? JSON.parse(data) : {}); } catch (e) { reject(e); } });
+    req.on('error', reject);
+  });
+}
 const ROUTER_SHAPES = [
+  {
+    name: 'ctx.webServer.register (via effect)',
+    register(ctx, method, path, fn) {
+      if (!ctx.effect || typeof ctx.effect !== 'function') return false;
+      ctx.effect(() => {
+        const handle = async (req, res) => {
+          const u = new URL(req.url || '/', 'http://x');
+          const query = Object.fromEntries(u.searchParams);
+          const body = method === 'post' ? await readJsonBody(req).catch(() => ({})) : {};
+          const result = await safe(fn, { query, body, params: {} });
+          res.writeHead(result.status, { 'Content-Type': 'application/json; charset=utf-8' });
+          res.end(JSON.stringify(result.json));
+        };
+        return ctx.webServer.register({ kind: 'exact', path, handler: handle });
+      }, `dsh-plugin-desktop ${method} ${path}`);
+      return true;
+    },
+  },
   {
     name: 'ctx.server[method]',
     register(ctx, method, path, fn) {
@@ -300,6 +350,15 @@ function tryAttachRoutes(ctx, handlers) {
 // If none works the endpoints answer 501 and the desktop falls back to
 // focusing the main window.
 const PROMPT_SHAPES = [
+  // Real dsh: host API gateway exposes apiProxy.sessions.prompt.
+  async (ctx, sessionId, text) => ctx.apiProxy?.sessions?.prompt({
+    rpcId: randomUUID(),
+    payload: {
+      sessionId,
+      mode: 'queue',
+      content: [{ type: 'text', text }],
+    },
+  }),
   async (ctx, sessionId, text) => ctx.server?.call?.('session.prompt', { sessionId, text }),
   async (ctx, sessionId, text) => ctx.call?.('session.prompt', { sessionId, text }),
   async (ctx, sessionId, text) => ctx.server?.rpc?.('session.prompt', { sessionId, text }),
@@ -325,6 +384,14 @@ async function trySendPrompt(ctx, sessionId, text) {
 }
 
 async function tryApprove(ctx, id, decision) {
+  // Real dsh: this plugin registers an `approval/request` answerer ahead of the
+  // web transport, so the desktop can resolve the pending request directly.
+  if (typeof pendingApprovalResolver === 'function') {
+    const resolve = pendingApprovalResolver;
+    pendingApprovalResolver = null;
+    resolve(decision === 'reject' ? 'rejected' : 'allowed-once');
+    return { sent: true, result: { id, decision } };
+  }
   for (const shape of APPROVE_SHAPES) {
     try {
       const r = await shape(ctx, id, decision);
@@ -340,6 +407,28 @@ module.exports = function apply(ctx) {
   const tracker = new Tracker();
 
   const events = tryAttachEvents(ctx, tracker);
+
+  // Real dsh answerer: claim approval requests before the web transport so the
+  // desktop / pet popup can approve or reject from /api/approve.
+  if (typeof ctx.on === 'function') {
+    ctx.on('approval/request', (req) => {
+      const sessionId = req?.agent?.session?.id;
+      const approvalId = tracker.pendingApproval?.id
+        || (req?.callId ? `call-${req.callId}` : null)
+        || `req-${Date.now()}`;
+      const summary = req?.reason || req?.toolName || 'approval request';
+      tracker.pendingApproval = {
+        id: approvalId,
+        summary: String(summary).slice(0, 160),
+        since: Date.now(),
+        sessionId,
+      };
+      return new Promise((resolve) => {
+        pendingApprovalResolver = resolve;
+      });
+    }, { prepend: true });
+  }
+
   const routes = tryAttachRoutes(ctx, [
     { method: 'get', path: '/api/state', fn: () => tracker.state() },
     { method: 'get', path: '/api/usage', fn: () => tracker.usage() },
@@ -377,7 +466,6 @@ module.exports = function apply(ctx) {
   // an assumption.
   const report = () => ({ events, routes });
   ctx.on?.('dispose', () => { tracker.sessions.clear(); });
-  ctx.desktopPlugin = report; // also reachable programmatically
   return { tracker, report };
 };
 
