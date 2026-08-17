@@ -13,17 +13,6 @@ const { autoUpdater } = require('electron-updater');
 const { spawn, execFile } = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');
-const path = require('node:path');
-
-// Wayland session: Electron's Ozone/Wayland backend can fail to bring up a
-// window on AMD (VA-API init storm -> GPU process FATAL, window never shows).
-// Force the X11 backend (XWayland) when there is no WAYLAND_DISPLAY-compatible
-// window server in use — verified reliable on this hardware; harmless when a
-// dedicated X11 session is already running. Must run before app ready.
-if (process.env.XDG_SESSION_TYPE === 'wayland' || process.env.WAYLAND_DISPLAY) {
-  app.commandLine.appendSwitch('ozone-platform', 'x11');
-  app.commandLine.appendSwitch('ozone-platform-hint', 'auto');
-}
 
 // Portable build: keep ALL app data (config, balance state, logs, caches)
 // next to the app under data/app/ so a portable instance and a normal install
@@ -38,6 +27,7 @@ function isolatePortableUserData() {
     return true;
   } catch { return false; }
 }
+const path = require('node:path');
 const { deepLinkFromArgv, clampWindowState, migrateProfiles, applyProfile, togglePin } = require('./desktop-utils');
 const wsTree = require('./ws-tree');
 
