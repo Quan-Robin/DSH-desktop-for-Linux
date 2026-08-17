@@ -38,7 +38,7 @@ const DSH_PACKAGE = '@deepseek-ai/dsh';
 // settings window (config.language).
 const I18N = {
   zh: {
-    file: '文件', settings: '设置…', checkUpdate: '检查更新', buildInstall: '从源码构建并安装',
+    file: '文件', settings: '设置…', checkUpdate: '检查更新', buildInstall: '从源码构建并安装', pluginReinstall: '重装伴生插件',
     exit: '退出', edit: '编辑', view: '视图', window: '窗口', help: '帮助',
     trayShow: '显示 / 隐藏', trayBrowser: '在浏览器中打开', trayRestart: '重启服务',
     updateNow: '立即更新', later: '稍后', ok: '确定',
@@ -111,7 +111,7 @@ const I18N = {
     restartNow: '立即重启',
   },
   en: {
-    file: 'File', settings: 'Settings…', checkUpdate: 'Check for Updates', buildInstall: 'Build & Install',
+    file: 'File', settings: 'Settings…', checkUpdate: 'Check for Updates', buildInstall: 'Build & Install', pluginReinstall: 'Reinstall companion plugin',
     exit: 'Exit', edit: 'Edit', view: 'View', window: 'Window', help: 'Help',
     trayShow: 'Show / Hide', trayBrowser: 'Open in Browser', trayRestart: 'Restart Service',
     updateNow: 'Update Now', later: 'Later', ok: 'OK',
@@ -1992,9 +1992,12 @@ function trayMenuTemplate() {
       checked: p.name === config.activeProfile,
       click: () => switchProfile(p.name),
     })) },
-    ...(pluginAvailable !== true
-      ? [{ label: t('pluginInstall'), click: () => installPluginAndRestart() }]
-      : []),
+    // Always present — toggling this entry on/off depends on pluginAvailable,
+    // which flips a few seconds after startup (probe completes) and again on
+    // service restart. Removing/adding menu entries mid-run makes GNOME's
+    // dbusmenu leave stale (greyed, shifted) items. Keep the structure fixed;
+    // only the label changes.
+    { label: pluginAvailable === true ? t('pluginReinstall') : t('pluginInstall'), click: () => installPluginAndRestart() },
     ...(config.sourceDir
       ? [{ label: t('buildInstall'), click: () => buildAndInstall() }]
       : []),
@@ -2083,9 +2086,8 @@ function trayMenuItems() {
       label: (p.name === config.activeProfile ? '✓ ' : '') + p.name,
       action: () => switchProfile(p.name),
     })) },
-    ...(pluginAvailable !== true
-      ? [{ label: t('pluginInstall'), action: () => installPluginAndRestart() }]
-      : []),
+    // Always present (see comment in trayMenuTemplate) — only the label changes.
+    { label: pluginAvailable === true ? t('pluginReinstall') : t('pluginInstall'), action: () => installPluginAndRestart() },
     ...(config.sourceDir
       ? [{ label: t('buildInstall'), action: () => buildAndInstall() }]
       : []),
