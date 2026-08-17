@@ -384,7 +384,11 @@ function detectFailedPlugin(logText) {
   // the plugin that actually failed to load.
   const matches = [...(logText || '').matchAll(PLUGIN_FAIL_RE)];
   const m = matches[matches.length - 1];
-  return m ? { id: m[1], pkg: m[2] } : null;
+  // Disable by package name when the loader reports one (entry ids are
+  // per-install hashes like "9fba86a4" — writing those into cordis.patch.yml
+  // disables nothing because the hash changes every bootstrap).
+  if (m && m[2]) return { id: m[2], pkg: m[2] };
+  return m ? { id: m[1], pkg: m[2] || m[1] } : null;
 }
 
 function readDshLogTail() {
