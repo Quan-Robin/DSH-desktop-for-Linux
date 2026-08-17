@@ -409,6 +409,22 @@ function readDshLogTail() {
 function disableDshPlugin(pluginId, patchFile) {
   const file = patchFile || path.join(balanceApi.getDshHome(), 'profiles', 'web', 'cordis.patch.yml');
   try {
+    // Bundle plugins (listed in the profile's dsh.profile.bundles) load
+    // BEFORE the patch layer — a `disabled: true` patch entry never reaches
+    // them, so remove the bundle entry instead.
+    const pkgFile = path.join(balanceApi.getDshHome(), 'profiles', 'web', 'package.json');
+    if (fs.existsSync(pkgFile)) {
+      const pkg = JSON.parse(fs.readFileSync(pkgFile, 'utf8'));
+      const bundles = pkg.dsh && pkg.dsh.profile && pkg.dsh.profile.bundles;
+      if (Array.isArray(bundles) && bundles.includes(pluginId)) {
+        pkg.dsh.profile.bundles = bundles.filter((b) => b !== pluginId);
+        if (pkg.dependencies && pkg.dependencies[pluginId]) delete pkg.dependencies[pluginId];
+        fs.writeFileSync(pkgFile, JSON.stringify(pkg, null, 2) + '\n');
+        console.log(`[dsh] removed bundle entry for ${pluginId} from profile package.json`);
+        return true;
+      }
+    }
+    // Non-bundle (patch-layer) plugin: write the disabled entry as before.
     // PatchOptions requires an id for non-insert patches ("id is required
     // for non-insert patches"), and disabled is a boolean.
     const entry = `- id: ${pluginId}\n  disabled: true`;
