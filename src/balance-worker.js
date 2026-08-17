@@ -10,15 +10,13 @@
 const { parentPort } = require('node:worker_threads');
 const fs = require('node:fs');
 const path = require('node:path');
-const { decompress } = require('fzstd');
-const { parseUsageFile, messageText } = require('./usage-parse');
+const { parseUsageFile, messageText, decompressZstd } = require('./usage-parse');
 
-function searchFile(file, needle, out, cap) {
-  let buf;
-  try { buf = fs.readFileSync(file); } catch { return; }
-  let json;
-  try { json = Buffer.from(decompress(new Uint8Array(buf))).toString('utf8'); } catch { return; }
-  for (const line of json.split('\n')) {
+async function searchFile(file, needle, out, cap) {
+  const json = await decompressZstd(file);
+  if (!json) return;
+  const text = json.toString('utf8');
+  for (const line of text.split('\n')) {
     if (out.length >= cap) return;
     if (!line.includes('"type":')) continue;
     let ev;
@@ -37,9 +35,9 @@ function searchFile(file, needle, out, cap) {
   }
 }
 
-parentPort.on('message', (msg) => {
+parentPort.on('message', async (msg) => {
   if (Array.isArray(msg)) {
-    const results = msg.map((file) => ({ file, data: parseUsageFile(file) }));
+    const results = await Promise.all(msg.map(async (file) => ({ file, data: await parseUsageFile(file) })));
     parentPort.postMessage(results);
     return;
   }
@@ -48,7 +46,7 @@ parentPort.on('message', (msg) => {
     const out = [];
     if (needle) {
       for (const file of msg.files || []) {
-        searchFile(file, needle, out, msg.cap || 60);
+        await searchFile(file, needle, out, msg.cap || 60);
         if (out.length >= (msg.cap || 60)) break;
       }
     }

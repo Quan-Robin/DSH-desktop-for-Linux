@@ -4,7 +4,26 @@
 // copies had already started to drift.
 
 const fs = require('node:fs');
+const { execFile } = require('node:child_process');
 const { decompress } = require('fzstd');
+
+// Decompress a .zstd session file. Prefer the system `zstd` CLI (C, ~20x
+// faster than fzstd's JS decoder — the first balance scan showed a ~15s
+// worker stall that froze the UI and looked like a hang); fall back to fzstd
+// when zstd is not on PATH.
+function decompressZstd(file) {
+  return new Promise((resolve) => {
+    execFile('zstd', ['-dc', '-q', file], { maxBuffer: 512 * 1024 * 1024, timeout: 30000 }, (err, stdout) => {
+      if (!err) return resolve(Buffer.from(stdout));
+      try {
+        const buf = fs.readFileSync(file);
+        resolve(Buffer.from(decompress(new Uint8Array(buf))));
+      } catch {
+        resolve(null);
+      }
+    });
+  });
+}
 
 function emptyUsage() {
   return { input: 0, cacheRead: 0, output: 0, reasoning: 0 };
@@ -44,7 +63,7 @@ function messageText(ev) {
 // usage of that max turn. The model of each call is paired from the preceding
 // request/header event (stream order). Usage is read from assistant/chunk
 // usage events only (assistant/message also carries usage — a duplicate).
-function parseUsageFile(file) {
+async function parseUsageFile(file) {
   const byModel = {};
   const userMsgByModel = {}; // usage since the last user/message — the "current turn" cost
   let currentModel = null;
@@ -52,9 +71,10 @@ function parseUsageFile(file) {
   let lastSummary = ''; // final assistant text of the last completed turn
   let msgText = '';
   try {
-    const buf = fs.readFileSync(file);
-    const json = Buffer.from(decompress(new Uint8Array(buf))).toString('utf8');
-    for (const line of json.split('\n')) {
+    const json = await decompressZstd(file);
+    if (!json) return emptyResult();
+    const text = json.toString('utf8');
+    for (const line of text.split('\n')) {
       if (!line.includes('"type":')) continue;
       try {
         const ev = JSON.parse(line);
@@ -96,4 +116,8 @@ function parseUsageFile(file) {
   return { byModel, userMsgByModel, lastTurnEndSeq, lastSummary };
 }
 
-module.exports = { emptyUsage, addUsage, extractText, messageText, parseUsageFile };
+function emptyResult() {
+  return { byModel: {}, userMsgByModel: {}, lastTurnEndSeq: 0, lastSummary: '' };
+}
+
+module.exports = { emptyUsage, addUsage, extractText, messageText, parseUsageFile, decompressZstd };

@@ -100,14 +100,14 @@ function findSessionFile(id) {
   // one id is a substring of another).
   return findSessionFiles().find((f) => path.basename(path.dirname(f)) === id) || null;
 }
-function parseSessionFileById(id) {
+async function parseSessionFileById(id) {
   const file = findSessionFile(id);
   if (!file) return null;
   let st;
   try { st = fs.statSync(file); } catch { return null; }
   const c = singleCache.get(file);
   if (c && c.mtimeMs === st.mtimeMs && c.size === st.size) return c.data;
-  const data = parseUsageFile(file);
+  const data = await parseUsageFile(file);
   singleCache.set(file, { mtimeMs: st.mtimeMs, size: st.size, data });
   return data;
 }
@@ -242,7 +242,7 @@ function parseFilesInWorker(files) {
   return new Promise((resolve) => {
     if (!files.length) return resolve([]);
     const w = getBalanceWorker();
-    if (!w) return resolve(files.map((f) => ({ file: f, data: parseUsageFile(f) })));
+    if (!w) return resolve(Promise.all(files.map(async (f) => ({ file: f, data: await parseUsageFile(f) }))));
     let settled = false;
     const finish = (fn) => (v) => {
       if (settled) return;
@@ -259,7 +259,7 @@ function parseFilesInWorker(files) {
       w.removeListener('message', onMsg);
       balanceWorker = null;
       try { w.terminate(); } catch { /* ignore */ }
-      resolve(files.map((f) => ({ file: f, data: parseUsageFile(f) })));
+      resolve(Promise.all(files.map(async (f) => ({ file: f, data: await parseUsageFile(f) }))));
     });
     // Worker hang guard: if the worker does not answer within 30s, fall back
     // to the inline parse so refreshBalance never gets stuck (which would
