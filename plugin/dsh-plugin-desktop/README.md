@@ -15,6 +15,17 @@ DSH-desktop-for-Linux 的伴生插件。运行在 dsh 服务进程内，把桌�
 - `POST /api/prompt` `{ sessionId?, text }` → 全局快捷输入的发送通道；`sessionId` 缺省用当前会话。
 - `POST /api/set-session` `{ sessionId }` → 桌面壳在用户在 Web UI 中切换会话时调用，让 `/api/state` 的 `currentSessionId` 始终跟随用户实际查看的会话（DS-pet 依赖此接口）。
 
+## 实机验证（2026-08-17）
+
+在真实 dsh + 桌面 Electron 环境中验证了 `POST /api/set-session` 的端到端链路：
+
+1. 创建两个会话，`/api/state` 因 `session/created` 事件暂时指向新会话；
+2. 在主页面（webContents 内）发起 `fetch('/api/session.history', { method: 'POST', body: JSON.stringify({ payload: { sessionId } }) })`，模拟用户在 Web UI 中打开某个会话；
+3. 桌面壳的 `webRequest` 嗅探捕获该请求并调用 `POST /api/set-session`；
+4. 随后 `GET /api/state` 的 `currentSessionId` 双向切换正确（`session-f30a986a-…` ↔ `session-611cc60e-…`）。
+
+该链路证明：即使插件可用（`pluginAvailable=true`），桌面端也会持续嗅探 `/api/session.*` 并同步 UI 导航导致的当前会话变化，DS-pet 轮询到的 `currentSessionId` 与实际查看的会话一致。
+
 事件语义与桌面端 `src/usage-parse.js` 完全一致（`request/header` 记模型、`user/message` 开新一轮、`turn/end` 收尾、用量只取 `assistant/chunk`），保证两条路径数字一致。
 
 ## 安装

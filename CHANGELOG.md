@@ -3,6 +3,12 @@
 本项目的版本更新说明。发布 GitHub Release 时同步引用本文件对应条目。
 
 
+
+## 0.1.37 (2026-08-17)
+
+- **右侧边栏浅色重写（对照 Reasonix/Codex 截图）**：`files-panel.html` 改为浅色主题，采用「概览 / 文件 / 改动」三个 tab；概览展示会话费用、本轮费用、tokens in/cache/out、命中率进度条、官方/估算余额（仅展示现有数据，省略无数据源的上下文窗口/按来源分析）；搜索并入文件 tab 顶部「筛选文件…」输入框（输入即内容搜索，清空恢复文件树）；文件树/引用/预览/改动 tab 功能保持。新增 `test/files-panel.test.mjs` 结构契约测试并纳入 `npm test`。
+- **DS-pet 会话状态同步实机验证记录**：插件 README 增加 2026-08-17 真实 dsh 双向切换验证（`/api/session.history` → webRequest 嗅探 → `POST /api/set-session` → `/api/state` 刷新）。
+
 ## 0.1.37 (2026-08-17)
 
 - **DS-pet 会话状态修复**：dsh Web UI 内切换会话时，桌面壳始终用 webRequest 观察 `/api/session.*`，并通过插件新增的 `POST /api/set-session` 同步到 `/api/state`；DS-pet 轮询到的 `currentSessionId` 从此跟随用户实际查看的会话（此前插件可用时桌面停止嗅探，导致状态停留在服务器事件）。
