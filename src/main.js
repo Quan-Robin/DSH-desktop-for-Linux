@@ -686,8 +686,10 @@ function createWindow() {
     // First startup: the view is blank until the (loading) page paints; an
     // unpainted BrowserWindow on some compositors renders transparent with
     // ghosting until a resize forces a repaint. Paint the window bg from the
-    // start (matches the loading/fatal pages).
+    // start and only show it once the first frame is ready, so no transparent
+    // frame is ever composited.
     backgroundColor: '#0d1117',
+    show: false,
     webPreferences: {
       preload: path.join(__dirname, 'webview-preload.js'),
       contextIsolation: true,
@@ -696,6 +698,8 @@ function createWindow() {
     },
   });
   if (ws.maximized) win.maximize();
+  // Show only once the first frame is ready (no transparent startup frame).
+  win.once('ready-to-show', () => { if (win && !win.isDestroyed() && !win.isVisible()) win.show(); });
 
   // The main content lives in its own WebContentsView so a docked sidebar
   // (files panel) can be laid out beside it without overlapping.

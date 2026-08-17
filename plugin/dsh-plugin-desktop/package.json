@@ -1,9 +1,22 @@
 {
   "name": "dsh-plugin-desktop",
-  "version": "0.1.0",
-  "description": "Companion plugin for DSH-desktop: exposes /api/state, /api/usage and /api/prompt so the desktop shell does not have to sniff web traffic or parse session files",
+  "version": "0.2.0",
+  "description": "Companion plugin for DSH-desktop: exposes /api/state, /api/usage and /api/prompt so the desktop shell does not have to sniff web traffic or parse session files. Also bundles the full in-page context menu (session/workspace/editor/links) with the desktop's pinned-sessions extension.",
   "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client-menu.js",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-runtime"
+      ]
+    }
+  },
   "license": "MIT",
   "author": "Quan-Robin",
-  "keywords": ["dsh", "dsh-plugin", "desktop"]
+  "keywords": ["dsh", "dsh-plugin", "desktop", "context-menu"]
 }

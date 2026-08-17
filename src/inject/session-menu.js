@@ -88,10 +88,19 @@
     try {
       var state = sessionsService && sessionsService.list.getSnapshot();
       var item = state && state.byId && state.byId[id];
-      if (item) return item.displayTitle || item.title || '';
+      if (item) return stripWhen(item.displayTitle || item.title || '');
     } catch (e) { /* snapshot unavailable */ }
     var pin = pins.find(function (p) { return p && p.id === id; });
-    return pin ? pin.title : id;
+    return stripWhen(pin ? pin.title : id);
+  }
+
+  // dsh session titles carry a relative-time suffix ("标题 · 2小时前") that
+  // must not appear in the pinned section — strip it off for display.
+  function stripWhen(title) {
+    return String(title)
+      .replace(/\s*[·•\-–]\s*\d+\s*(秒|分钟|分钟|小时|天|周)\s*(前|ago)?\s*$/i, '')
+      .replace(/\s+\d{1,2}:\d{2}(:\d{2})?\s*$/, '')
+      .trim();
   }
 
   function sessionAlive(id) {
@@ -264,8 +273,11 @@
     } else if (row) {
       var rowTitle = (row.getAttribute('aria-label') || row.getAttribute('title') || row.textContent || '').trim();
       if (rowTitle) {
-        add(root, '置顶会话', function () { toMain('pins:toggle', { id: rowTitle, title: rowTitle }); toast('已置顶（列表上方查看）'); });
-        add(root, '取消置顶', function () { toMain('pins:toggle', { id: rowTitle, title: rowTitle }); toast('已取消置顶'); });
+        if (isPinned(rowTitle)) {
+          add(root, '取消置顶', function () { toMain('pins:toggle', { id: rowTitle, title: rowTitle }); toast('已取消置顶'); });
+        } else {
+          add(root, '置顶会话', function () { toMain('pins:toggle', { id: rowTitle, title: rowTitle }); toast('已置顶（列表上方查看）'); });
+        }
         split(root);
       }
       add(root, '刷新', function () { globalThis.location.reload(); }, 'Ctrl+R');
@@ -674,6 +686,15 @@
     interopEntry.label = session && isPinned(session.id) ? '取消置顶' : '置顶会话';
   });
 
+  // Pin toggles coming from the paired client-menu (baihejiangnan-derived)
+  // extension — route into the desktop shell's pin store.
+  window.addEventListener('dsh:desktop-pin', function (e) {
+    var d = e.detail || {};
+    if (!d.sessionId && !d.title) return;
+    toMain('pins:toggle', { id: d.sessionId || d.title, title: d.title || d.sessionId });
+    renderPins();
+  });
+
   // ---------- main contextmenu handler ----------
 
   function onContextMenu(event) {
@@ -843,19 +864,37 @@
     if (window.__dshDesktopMenuApplied) return;
     window.__dshDesktopMenuApplied = true;
     console.log('[dsh-desktop] directStart: menu bootstrapped (services may be null)');
-    var style = document.createElement('style');
-    style.dataset.desktopInject = 'session-menu';
-    style.textContent = CSS;
-    document.head.appendChild(style);
-    document.addEventListener('contextmenu', onContextMenu, true);
-    document.addEventListener('pointerdown', outside, true);
-    document.addEventListener('keydown', keyboard, true);
+    // With the original session-context-menu plugin present, do not add a
+    // second contextmenu handler — it owns the menu. We only manage pins
+    // (independent section + pin extension registered into its registry).
+    if (!officialPluginPresent()) {
+      var style = document.createElement('style');
+      style.dataset.desktopInject = 'session-menu';
+      style.textContent = CSS;
+      document.head.appendChild(style);
+      document.addEventListener('contextmenu', onContextMenu, true);
+      document.addEventListener('pointerdown', outside, true);
+      document.addEventListener('keydown', keyboard, true);
+    }
     renderPins();
     watchPins();
     toMain('pins:hello', null);
+    // Register the pin extension into the original plugin's menu registry
+    // once it appears (the plugin's client registers asynchronously).
+    var interopTries = 0;
+    var interopTimer = setInterval(function () {
+      if (interopEntry) { clearInterval(interopTimer); return; }
+      if (globalThis[KEY]) { clearInterval(interopTimer); ensureInterop(); }
+      else if (++interopTries > 20) clearInterval(interopTimer);
+    }, 500);
   }
 
   function boot(attempt) {
+    // When the original session-context-menu plugin is present (installed as
+    // a real dsh plugin), it owns the menu with full functionality; our
+    // module adds only the pin extension via its registry. Skip registering a
+    // second module so dsh never sees a duplicate factory.
+    if (officialPluginPresent()) return;
     if (window.__ModuleLoader__) {
       try {
         window.__ModuleLoader__.load({ id: 'dsh-desktop-session-menu', factory: factory });
