@@ -68,7 +68,7 @@
       pins = Array.isArray(payload) ? payload : [];
       renderPins();
     } else if (box.dataset.kind === 'jump' && payload) {
-      openSession(payload);
+      openSession(payload && payload.id ? payload.id : payload, payload && payload.title);
     }
   });
 
@@ -101,9 +101,24 @@
     } catch (e) { return false; }
   }
 
-  function openSession(id) {
-    if (!sessionsService) { toast('会话服务尚未就绪'); return; }
-    try { sessionsService.open(id); } catch (e) { toast('无法打开会话：' + (e && e.message || e)); }
+  function openSession(id, title) {
+    var row = findSessionRow(title || sessionTitle(id));
+    if (row) { row.click(); return; }
+    if (sessionsService) {
+      try { sessionsService.open(id); return; } catch (e) { /* fall through */ }
+    }
+    toast('无法打开会话：' + (title || id));
+  }
+
+  function findSessionRow(title) {
+    if (!title) return null;
+    var rows = document.querySelectorAll('[role="treeitem"]');
+    for (var i = 0; i < rows.length; i++) {
+      var row = rows[i];
+      var text = (row.textContent || '').trim();
+      if (text.indexOf(title) >= 0) return row;
+    }
+    return null;
   }
 
   // ---------- pinned section (independent partition above the list) ----------
@@ -136,6 +151,7 @@
   function renderPins() {
     var container = listContainer();
     if (!container) return;
+    if (!container.parentNode || typeof container.parentNode.insertBefore !== 'function') return;
     if (!pinSection || !pinSection.isConnected) {
       var built = buildPinSection();
       pinSection = built.section;
@@ -178,7 +194,7 @@
       span.className = 'dshdp-title';
       span.textContent = sessionTitle(p.id);
       item.appendChild(span);
-      item.addEventListener('click', function () { openSession(p.id); });
+      item.addEventListener('click', function () { openSession(p.id, p.title); });
       item.addEventListener('keydown', function (e) { if (e.key === 'Enter') openSession(p.id); });
       item.addEventListener('contextmenu', function (e) {
         e.preventDefault();
@@ -760,6 +776,21 @@
 
   // ---------- bootstrap: the dsh web UI's own client module loader ----------
 
+  function directStart() {
+    if (window.__dshDesktopMenuApplied) return;
+    window.__dshDesktopMenuApplied = true;
+    var style = document.createElement('style');
+    style.dataset.desktopInject = 'session-menu';
+    style.textContent = CSS;
+    document.head.appendChild(style);
+    document.addEventListener('contextmenu', onContextMenu, true);
+    document.addEventListener('pointerdown', outside, true);
+    document.addEventListener('keydown', keyboard, true);
+    renderPins();
+    watchPins();
+    toMain('pins:hello', null);
+  }
+
   function boot(attempt) {
     if (window.__ModuleLoader__) {
       try {
@@ -773,5 +804,7 @@
     if (attempt < 8) setTimeout(function () { boot(attempt + 1); }, 1200);
     else console.warn('[dsh-desktop] __ModuleLoader__ not found — session menu/pins disabled');
   }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', directStart);
+  else directStart();
   boot(0);
 })();

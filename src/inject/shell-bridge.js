@@ -58,6 +58,7 @@
 
   function snapshotWorkspaces() {
     try {
+      if (!sessionsService || !workspacesService) return null;
       var ws = workspacesService && workspacesService.list.getSnapshot();
       var ss = sessionsService && sessionsService.list.getSnapshot();
       var items = (ws && ws.items) || [];
@@ -156,6 +157,19 @@
     return module.exports;
   }
 
+  function directStart() {
+    if (window.__dshShellBridgeApplied) return;
+    window.__dshShellBridgeApplied = true;
+    ensureToggleButton();
+    reportWorkspaces(true);
+    var timer = setInterval(function () {
+      if (document.hidden) return;
+      ensureToggleButton();
+      reportWorkspaces(false);
+    }, 2000);
+    window.addEventListener('beforeunload', function () { clearInterval(timer); });
+  }
+
   function boot(attempt) {
     if (window.__ModuleLoader__) {
       try { window.__ModuleLoader__.load({ id: 'dsh-desktop-shell-bridge', factory: factory }); return; }
@@ -164,5 +178,7 @@
     if (attempt < 8) setTimeout(function () { boot(attempt + 1); }, 1200);
     else console.warn('[dsh-desktop] __ModuleLoader__ not found — shell bridge disabled');
   }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', directStart);
+  else directStart();
   boot(0);
 })();

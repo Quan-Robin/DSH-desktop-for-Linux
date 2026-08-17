@@ -134,6 +134,7 @@ async function fetchSessions(port) {
       running: !!it.running,
       blank: !!it.blank,
       title: v.title || null,
+      cwd: it.cwd || null,
       tokens: {
         uncachedInputTokens: tokens.uncachedInputTokens || 0,
         cacheReadTokens: tokens.cacheReadTokens || 0,

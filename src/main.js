@@ -1202,7 +1202,8 @@ function jumpToSession(id) {
   if (win && !win.isDestroyed()) {
     win.show();
     win.focus();
-    win.webContents.send('jump', id);
+    const hit = (balanceState.sessions || []).find((x) => x.id === id);
+    win.webContents.send('jump', { id, title: hit ? hit.title : '' });
   }
 }
 
@@ -1625,11 +1626,13 @@ async function doRefresh() {
   balanceState.consumed = balanceApi.costOfByModel(usage.byModel, pricing);
   balanceState.turnCost = balanceApi.costOfByModel(usage.userMsgByModel, pricing);
   const titleById = new Map((server || []).filter((s) => s.title).map((s) => [s.id, s.title]));
+  const cwdById = new Map((server || []).filter((s) => s.cwd).map((s) => [s.id, s.cwd]));
   balanceState.sessions = usage.sessions.map((s) => ({
     id: s.id,
     title: titleById.get(s.id) || null,
     mtimeMs: s.mtimeMs,
     cost: balanceApi.costOfByModel(s.byModel, pricing),
+    cwd: cwdById.get(s.id) || null,
   }));
   let activeId = null;
   if (config.balanceSessionIdManual && config.balanceSessionId && (!server || server.some((s) => s.id === config.balanceSessionId))) {
@@ -1648,6 +1651,16 @@ async function doRefresh() {
   }
   if (!activeId) activeId = (usage.sessions[0] || {}).id || null; // local fallback (newest)
   balanceState.currentId = activeId;
+  // Main-side workspace fallback: when the page bridge has not reported a
+  // workspace snapshot, still give the files panel the active session's cwd.
+  const activeCwd = cwdById.get(activeId);
+  if (activeCwd) {
+    workspaceState.currentPath = activeCwd;
+    workspaceState.currentSessionId = activeId;
+    if (!workspaceState.list.some((w) => w.path === activeCwd)) {
+      workspaceState.list.push({ id: activeCwd, title: path.basename(activeCwd) || activeCwd, path: activeCwd });
+    }
+  }
   // Official per-session token usage (session.list RPC) for the ACTIVE
   // session — surfaced in the files-panel stats strip.
   const serverItem = server ? server.find((s) => s.id === activeId) : null;

@@ -31,7 +31,7 @@ function extractText(content) {
 function messageText(ev) {
   if (!ev || typeof ev.type !== 'string') return '';
   if (ev.type === 'user/message') {
-    const t = extractText(ev.data?.message?.content);
+    const t = extractText(ev.data?.message?.content) || extractText(ev.data?.content);
     if (t) return t;
     const c = ev.data?.content;
     return typeof c === 'string' ? c : '';
