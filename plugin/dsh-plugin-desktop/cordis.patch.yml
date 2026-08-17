@@ -1,0 +1,6 @@
+- insert:
+    - id: dsh-plugin-desktop
+      name: dsh-plugin-desktop
+      inject:
+        - webServer
+        - apiProxy

@@ -9,6 +9,9 @@
     "./package.json": "./package.json"
   },
   "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
     "client": {
       "platform": "web",
       "inject": [
@@ -18,5 +21,10 @@
   },
   "license": "MIT",
   "author": "Quan-Robin",
-  "keywords": ["dsh", "dsh-plugin", "desktop", "context-menu"]
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "desktop",
+    "context-menu"
+  ]
 }

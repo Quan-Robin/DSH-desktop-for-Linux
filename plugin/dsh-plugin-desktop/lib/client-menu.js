@@ -1,5 +1,5 @@
 window.__ModuleLoader__.load({
-  id: "@baihejiangnan/dsh-session-context-menu",
+  id: "dsh-plugin-desktop",
   factory: () => {
     const module = { exports: {} }
     const KEY = Symbol.for("dsh.session-context-menu.extensions")
