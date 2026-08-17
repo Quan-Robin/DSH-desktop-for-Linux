@@ -702,7 +702,13 @@ function createWindow() {
   // ready-to-show may never fire here: the real content lives in a
   // WebContentsView (the window's own webContents stays empty), so show the
   // window after a short tick instead of waiting on it.
-  setTimeout(() => { if (win && !win.isDestroyed() && !win.isVisible()) win.show(); }, 300);
+  setTimeout(() => {
+    if (win && !win.isDestroyed() && !win.isVisible()) win.show();
+    // After the window is actually visible, lay the view out with the final
+    // content size — the pre-show layout uses the configured size which may
+    // differ from the rendered one (frame, maximized).
+    layoutFilesPanel();
+  }, 300);
   // First-run layout: the main view has no bounds until layoutFilesPanel runs
   // (it is only called on resize/toggle) — lay it out immediately or the first
   // frame is an empty transparent window until the user manually resizes.
@@ -2085,6 +2091,11 @@ function trayMenuItems() {
 function createTray() {
   console.log('[tray] createTray: wayland=', !!process.env.WAYLAND_DISPLAY, 'xdg=', process.env.XDG_SESSION_TYPE);
   if (process.platform === 'linux' && process.env.WAYLAND_DISPLAY) {
+    // If an SNI tray already exists, just hot-update its menu — creating a
+    // second service (same pid, next suffix) adds a duplicate tray icon.
+    if (sniTray && sniTray.setMenu) {
+      try { sniTray.setMenu(trayMenuItems()); return; } catch { /* fall through to recreate */ }
+    }
     // Wayland: Electron's Tray SNI is broken (fake IconName, unreadable
     // IconPixmap) — use our own StatusNotifierItem instead.
     // createSniTray registers asynchronously (a few seconds of watcher

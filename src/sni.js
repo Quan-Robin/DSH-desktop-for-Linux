@@ -214,9 +214,12 @@ async function createSniTray({ iconPath, title, menuItems, onActivate, onSeconda
   const menu = new Dbmenu(menuItems);
 
   const serviceName = `org.kde.StatusNotifierItem-${process.pid}-${(sniSeq++)}`;
+  console.log('[sni] createSniTray: serviceName=', serviceName, 'unique=', bus.name);
   await bus.requestName(serviceName);
+  console.log('[sni] requestName OK');
   bus.export('/StatusNotifierItem', iface);
   bus.export('/MenuBar', menu);
+  console.log('[sni] exported');
 
   // Register with the desktop's StatusNotifierWatcher so the shell shows us.
   // The spec wants our unique bus name (GNOME's watcher tracks by unique name).
@@ -244,11 +247,15 @@ async function createSniTray({ iconPath, title, menuItems, onActivate, onSeconda
     return reply.body && reply.body[0] && reply.body[0].value ? reply.body[0].value : [];
   };
   for (let attempt = 0; attempt < 4; attempt++) {
-    try { await withTimeout(bus.call(register), 2000); } catch { /* watcher may be slow — keep trying */ }
+    console.log('[sni] attempt', attempt, 'registering', bus.name);
+    try { await withTimeout(bus.call(register), 2000); console.log('[sni] register call returned'); } catch (e) { console.log('[sni] register call err:', e.message); }
     await sleep(1500); // give the shell time to probe and record us
     try {
       // The watcher records items as "<unique-name>@<path>".
-      if ((await withTimeout(listItems(), 2000)).some((item) => item.startsWith(bus.name + '@'))) {
+      const items = await withTimeout(listItems(), 2000);
+      console.log('[sni] watcher items:', JSON.stringify(items));
+      if (items.some((item) => item.startsWith(bus.name + '@'))) {
+        console.log('[sni] registered OK, item =', items.find((i) => i.startsWith(bus.name + '@')));
         return {
           serviceName,
           pixmap: iface._pixmap,
