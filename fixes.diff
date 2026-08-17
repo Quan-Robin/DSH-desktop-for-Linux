@@ -1,0 +1,110 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index ef5b9fd..b6dc1ec 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -2,6 +2,12 @@
+ 
+ 本项目的版本更新说明。发布 GitHub Release 时同步引用本文件对应条目。
+ 
++## Unreleased
++
++- **修复（连续对话估算偏高）**：上一轮结束后、官方账单确认前（约 3 分钟）就开始下一轮时，基线仍停留在对话开始时的官方值——上一轮花费从未扣除，误差随轮数累积。现在新轮开始时基线重置为上一轮结束时的冻结估算（取与官方值的较小者，账单已落定或第三方消耗时以官方为准）
++- **清理**：移除已无触达路径的托盘「已自动重校准」菜单项及对应 i18n（自动重校准方案已于 0.1.36 移除）
++- **文案**：余额说明（balNote）同步为对话感知估算模型的新语义（主进程与 balance.html 两处、中英双语）
++
+ ## 0.1.36 (2026-08-16)
+ 
+ - **新增：对话感知估算余额**——对话进行中，估算余额 = 对话开始时的官方余额 − 本次对话消耗（随消耗实时减少）；对话结束（turn/end 事件）后估算冻结，待官方余额稳定 60 秒（计费落定）后自动采纳为新基线
+diff --git a/src/balance.html b/src/balance.html
+index 0dde341..17c876a 100644
+--- a/src/balance.html
++++ b/src/balance.html
+@@ -34,7 +34,7 @@
+     <button id="btn-refresh" data-i18n="balRefresh">刷新余额</button>
+     <button id="btn-calibrate" class="primary" data-i18n="balCalibrate">校准（以当前官方余额为基准）</button>
+   </div>
+-  <div class="muted" data-i18n="balNote">「校准」将当前官方余额记为基准，之后按本地 token 用量实时估算，不受官方余额更新延迟影响。价格按模型估算（峰谷定价 8-17 起生效），官方账单约 3 分钟后确认，可在 config.json 的 pricing 中调整。</div>
++  <div class="muted" data-i18n="balNote">估算余额：对话进行中按「官方余额 − 当前轮消耗」实时递减；一轮结束后冻结，待官方账单确认（约 3 分钟，稳定 60 秒后）自动对齐官方值。价格按模型估算（峰谷定价 8-17 起生效），可在 config.json 的 pricing 中调整。</div>
+ </section>
+ 
+ <section>
+@@ -52,7 +52,7 @@
+       balSessionsTitle: '各会话消耗（预估）', balSetCurrent: '设为当前', balCurrent: '当前',
+       balSessionNote: '「设为当前」手动指定「当前会话消耗/本次对话消耗」统计的会话；不设置时自动跟随最近活跃会话。',
+       balUncalibrated: '（未校准）',
+-      balNote: '「校准」将当前官方余额记为基准，之后按本地 token 用量实时估算，不受官方余额更新延迟影响。当前会话消耗跟随 Web UI 中切换的会话（切换到某会话后继续对话即更新）；价格按模型估算（峰谷定价 8-17 起生效），官方账单约 3 分钟后确认，可在 config.json 的 pricing 中调整。',
++      balNote: '估算余额：对话进行中按「官方余额 − 当前轮消耗」实时递减；一轮结束后冻结，待官方账单确认（约 3 分钟，稳定 60 秒后）自动对齐官方值。「校准」将当前官方余额立即设为对话基准。当前会话消耗跟随 Web UI 中切换的会话（切换到某会话后继续对话即更新）；价格按模型估算（峰谷定价 8-17 起生效），可在 config.json 的 pricing 中调整。',
+     },
+     en: {
+       balTitle: 'Balance', balOfficial: 'Official balance', balEstimate: 'Estimated balance',
+@@ -61,7 +61,7 @@
+       balSessionsTitle: 'Per-session cost (est.)', balSetCurrent: 'Set as current', balCurrent: 'current',
+       balSessionNote: '「Set as current」picks the session used for the current-session / last-turn costs; when unset the most recently active session is followed automatically.',
+       balUncalibrated: '(not calibrated)',
+-      balNote: '"Calibrate" records the current official balance as the baseline; afterwards the estimate is derived from local token usage in real time. The current-session cost follows the session selected in the Web UI (it updates once you keep chatting there); prices are per-model (peak/off-peak from 2026-08-17), the official bill confirms within ~3 minutes, and pricing in config.json is adjustable.',
++      balNote: 'Estimated balance: while a conversation is in progress it counts down as (official balance − current-turn cost); after a turn ends it freezes, then re-aligns with the official value once the bill settles (~3 minutes, 60 s stable). "Calibrate" immediately re-bases it on the current official balance. The current-session cost follows the session selected in the Web UI (it updates once you keep chatting there); prices are per-model (peak/off-peak from 2026-08-17), and pricing in config.json is adjustable.',
+     },
+   };
+   let lang = 'zh';
+diff --git a/src/main.js b/src/main.js
+index 8b6c55d..7ad10b7 100644
+--- a/src/main.js
++++ b/src/main.js
+@@ -67,13 +67,12 @@ const I18N = {
+     balUncalibrated: '（未校准）', balNoKey: '未找到 API key（~/.dsh/.credentials.yaml）',
+     balSession: '当前会话消耗（预估）', balTurn: '本次对话消耗（预估）', balDetail: '余额详情…',
+     balSessionsTitle: '各会话消耗（预估）', balSessionId: '会话', balSessionTime: '时间', balSessionCost: '消耗', balNoSessions: '（暂无会话记录）',
+-    balNote: '「校准」将当前官方余额记为基准，之后按本地 token 用量实时估算，不受官方余额更新延迟影响。当前会话消耗按模型价格估算（峰谷定价 8-17 起生效），官方账单约 3 分钟后确认；价格可在 config.json 的 pricing 中调整。',
++    balNote: '估算余额：对话进行中按「官方余额 − 当前轮消耗」实时递减；一轮结束后冻结，待官方账单确认（约 3 分钟，稳定 60 秒后）自动对齐官方值。「校准」将当前官方余额立即设为对话基准。消耗按模型价格估算（峰谷定价 8-17 起生效）；价格可在 config.json 的 pricing 中调整。',
+     pluginFailMsg: 'dsh 插件 {id} 加载失败导致启动失败。是否在下次启动时禁用该插件？\n（禁用后该插件功能不可用；恢复方法：删除 ~/.dsh/profiles/web/cordis.patch.yml 中对应条目）',
+     pluginDisableRestart: '禁用并重启', pluginSkip: '暂不处理',
+     pluginDisabledTitle: '插件已禁用', pluginDisabledBody: '插件 {id} 已禁用，正在重启服务…',
+     bundledMissingTitle: '便携运行时缺失', bundledMissingBody: '未找到内置运行时（bundled），已自动回退到 npx 模式启动 dsh。',
+     turnDoneTitle: 'DeepSeek Harness', turnDoneBody: '本轮对话已完成',
+-    balAutoRecalibrated: '（估算偏差过大，已自动重校准）',
+     loadingTitle: '正在启动 DeepSeek Harness…',
+     loadingHint: '首次运行会通过 npx 下载 dsh 包，可能需要几分钟，请稍候。',
+     fatalTitle: 'DeepSeek Harness 启动失败',
+@@ -129,13 +128,12 @@ const I18N = {
+     balUncalibrated: '(not calibrated)', balNoKey: 'API key not found (~/.dsh/.credentials.yaml)',
+     balSession: 'Current session (est.)', balTurn: 'Last turn (est.)', balDetail: 'Balance details…',
+     balSessionsTitle: 'Per-session cost (est.)', balSessionId: 'Session', balSessionTime: 'Time', balSessionCost: 'Cost', balNoSessions: '(no session records)',
+-    balNote: '"Calibrate" records the current official balance as the baseline; afterwards the estimate is derived from local token usage in real time, unaffected by official balance lag. Session/turn costs use per-model pricing (peak/off-peak from 2026-08-17); the official bill confirms within ~3 minutes. Prices are adjustable via pricing in config.json.',
++    balNote: 'Estimated balance: while a conversation is in progress it counts down as (official balance − current-turn cost); after a turn ends it freezes, then re-aligns with the official value once the bill settles (~3 minutes, 60 s stable). "Calibrate" immediately re-bases the estimate on the current official balance. Costs are per-model (peak/off-peak from 2026-08-17); prices are adjustable via pricing in config.json.',
+     pluginFailMsg: 'dsh plugin {id} failed to load, which made dsh exit on startup. Disable this plugin on the next start?\n(The plugin will be unavailable; to re-enable, remove the matching entry from ~/.dsh/profiles/web/cordis.patch.yml)',
+     pluginDisableRestart: 'Disable & restart', pluginSkip: 'Not now',
+     pluginDisabledTitle: 'Plugin disabled', pluginDisabledBody: 'Plugin {id} disabled — restarting the service…',
+     bundledMissingTitle: 'Portable runtime missing', bundledMissingBody: 'No bundled runtime found — fell back to npx mode to start dsh.',
+     turnDoneTitle: 'DeepSeek Harness', turnDoneBody: 'The last turn has finished',
+-    balAutoRecalibrated: '(estimate drifted — auto re-calibrated)',
+     loadingTitle: 'Starting DeepSeek Harness…',
+     loadingHint: 'The first run downloads the dsh package via npx; this can take a few minutes.',
+     fatalTitle: 'DeepSeek Harness failed to start',
+@@ -1154,7 +1152,16 @@ async function doRefresh() {
+     if (official !== convLastOfficial) { convLastOfficial = official; convOfficialStableAt = now; }
+     if (turnGrew) {
+       // Conversation in progress: estimate = official at its start − turn cost.
+-      if (convBase == null) convBase = official;
++      if (convDone && convFrozenEst != null) {
++        // Back-to-back turns: the previous turn's billing usually has NOT
++        // settled yet (~3 min lag), so `official` is still the pre-turn
++        // value. Re-base on the frozen post-turn estimate instead of letting
++        // the stale official carry the previous turn's cost forever; take
++        // the min so a settled (lower) official or third-party spend wins.
++        convBase = Math.min(convFrozenEst, official);
++      } else if (convBase == null) {
++        convBase = official;
++      }
+       convDone = false;
+       balanceState.estimated = convBase - turn;
+     } else if (convDone) {
+@@ -1228,9 +1235,6 @@ function balanceMenuItems() {
+     { label: `${t('balOfficial')}: ${fmt(balanceState.official)}`, enabled: false },
+     { label: `${t('balEstimate')}: ${fmt(balanceState.estimated)}${balanceState.calibrated ? '' : ` ${t('balUncalibrated')}`}`, enabled: false },
+     { label: `${t('balSession')}: ${fmt(balanceState.sessionCost)} | ${t('balTurn')}: ${fmt(balanceState.turnCost)}`, enabled: false },
+-    ...(balanceState.autoRecalibratedAt && Date.now() - balanceState.autoRecalibratedAt < 60000
+-      ? [{ label: t('balAutoRecalibrated'), enabled: false }]
+-      : []),
+     { type: 'separator' },
+     { label: t('balSessionsTitle'), submenu: sessionsSub.length ? sessionsSub : [{ label: t('balNoSessions'), enabled: false }] },
+     { label: t('balDetail'), click: () => openBalance() },

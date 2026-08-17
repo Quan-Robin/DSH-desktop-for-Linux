@@ -34,7 +34,7 @@
     <button id="btn-refresh" data-i18n="balRefresh">刷新余额</button>
     <button id="btn-calibrate" class="primary" data-i18n="balCalibrate">校准（以当前官方余额为基准）</button>
   </div>
-  <div class="muted" data-i18n="balNote">「校准」将当前官方余额记为基准，之后按本地 token 用量实时估算，不受官方余额更新延迟影响。价格按模型估算（峰谷定价 8-17 起生效），官方账单约 3 分钟后确认，可在 config.json 的 pricing 中调整。</div>
+  <div class="muted" data-i18n="balNote">估算余额：对话进行中按「官方余额 − 当前轮消耗」实时递减；一轮结束后冻结，待官方账单确认（约 3 分钟，稳定 60 秒后）自动对齐官方值。价格按模型估算（峰谷定价 8-17 起生效），可在 config.json 的 pricing 中调整。</div>
 </section>
 
 <section>
@@ -52,7 +52,7 @@
       balSessionsTitle: '各会话消耗（预估）', balSetCurrent: '设为当前', balCurrent: '当前',
       balSessionNote: '「设为当前」手动指定「当前会话消耗/本次对话消耗」统计的会话；不设置时自动跟随最近活跃会话。',
       balUncalibrated: '（未校准）',
-      balNote: '「校准」将当前官方余额记为基准，之后按本地 token 用量实时估算，不受官方余额更新延迟影响。当前会话消耗跟随 Web UI 中切换的会话（切换到某会话后继续对话即更新）；价格按模型估算（峰谷定价 8-17 起生效），官方账单约 3 分钟后确认，可在 config.json 的 pricing 中调整。',
+      balNote: '估算余额：对话进行中按「官方余额 − 当前轮消耗」实时递减；一轮结束后冻结，待官方账单确认（约 3 分钟，稳定 60 秒后）自动对齐官方值。「校准」将当前官方余额立即设为对话基准。当前会话消耗跟随 Web UI 中切换的会话（切换到某会话后继续对话即更新）；价格按模型估算（峰谷定价 8-17 起生效），可在 config.json 的 pricing 中调整。',
     },
     en: {
       balTitle: 'Balance', balOfficial: 'Official balance', balEstimate: 'Estimated balance',
@@ -61,7 +61,7 @@
       balSessionsTitle: 'Per-session cost (est.)', balSetCurrent: 'Set as current', balCurrent: 'current',
       balSessionNote: '「Set as current」picks the session used for the current-session / last-turn costs; when unset the most recently active session is followed automatically.',
       balUncalibrated: '(not calibrated)',
-      balNote: '"Calibrate" records the current official balance as the baseline; afterwards the estimate is derived from local token usage in real time. The current-session cost follows the session selected in the Web UI (it updates once you keep chatting there); prices are per-model (peak/off-peak from 2026-08-17), the official bill confirms within ~3 minutes, and pricing in config.json is adjustable.',
+      balNote: 'Estimated balance: while a conversation is in progress it counts down as (official balance − current-turn cost); after a turn ends it freezes, then re-aligns with the official value once the bill settles (~3 minutes, 60 s stable). "Calibrate" immediately re-bases it on the current official balance. The current-session cost follows the session selected in the Web UI (it updates once you keep chatting there); prices are per-model (peak/off-peak from 2026-08-17), and pricing in config.json is adjustable.',
     },
   };
   let lang = 'zh';
