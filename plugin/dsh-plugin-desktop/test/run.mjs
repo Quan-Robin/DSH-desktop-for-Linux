@@ -36,7 +36,7 @@ function makeMockCtx() {
 }
 
 const ctx = makeMockCtx();
-['/api/state', '/api/usage', '/api/prompt', '/api/approve', '/api/set-session'].forEach((p) => ctx._declare(p));
+['/api/state', '/api/usage', '/api/prompt', '/api/approve', '/api/set-session', '/api/tree', '/api/peek', '/api/gitstatus'].forEach((p) => ctx._declare(p));
 const { report } = plugin.apply(ctx);
 const diag = report();
 assert.strictEqual(diag.events.attached, true, 'event adapter should attach');

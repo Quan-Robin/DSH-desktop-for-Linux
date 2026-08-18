@@ -1,7 +1,7 @@
 {
   "name": "dsh-plugin-desktop",
-  "version": "0.2.0",
-  "description": "Companion plugin for DSH-desktop: exposes /api/state, /api/usage and /api/prompt so the desktop shell does not have to sniff web traffic or parse session files. Also bundles the full in-page context menu (session/workspace/editor/links) with the desktop's pinned-sessions extension.",
+  "version": "0.3.0",
+  "description": "Companion plugin for DSH-desktop: current-session / usage / prompt APIs, in-page context menu + pinned sessions, and the dockable right-side file panel (v0.3).",
   "main": "lib/index.js",
   "exports": {
     ".": "./lib/index.js",

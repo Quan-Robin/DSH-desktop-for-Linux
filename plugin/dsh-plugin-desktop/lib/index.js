@@ -1,5 +1,6 @@
 'use strict';
 const { randomUUID } = require('node:crypto');
+const { wsList, wsPeek } = require('./ws-tree');
 // dsh-plugin-desktop — companion plugin for DSH-desktop-for-Linux.
 //
 // Why this exists: the desktop shell used to (a) sniff webRequest bodies to
@@ -479,6 +480,46 @@ module.exports = function apply(ctx) {
         if (!r.sent) return { status: 501, json: { error: 'approval RPC not available in this dsh build', id, decision } };
         tracker.pendingApproval = null;
         return { id, decision };
+      },
+    },
+    // ── file panel (v0.3): tree / peek / git status for the in-page right
+    // side panel. The panel passes the workspace root (session cwd) from the
+    // page's workspaces service; paths are validated against traversal.
+    {
+      method: 'get',
+      path: '/api/tree',
+      fn: ({ query }) => {
+        const root = typeof query.root === 'string' ? query.root : '';
+        const rel = typeof query.rel === 'string' ? query.rel : '';
+        if (!root) return { status: 400, json: { error: 'root required' } };
+        return wsList(root, rel);
+      },
+    },
+    {
+      method: 'get',
+      path: '/api/peek',
+      fn: ({ query }) => {
+        const p = typeof query.path === 'string' ? query.path : '';
+        if (!p) return { status: 400, json: { error: 'path required' } };
+        const r = wsPeek(p);
+        return r.ok ? r : { status: 404, json: r };
+      },
+    },
+    {
+      method: 'get',
+      path: '/api/gitstatus',
+      fn: ({ query }) => {
+        const root = typeof query.root === 'string' ? query.root : '';
+        if (!root) return { status: 400, json: { error: 'root required' } };
+        try {
+          const { execFileSync } = require('node:child_process');
+          const branch = execFileSync('git', ['-C', root, 'branch', '--show-current'], { encoding: 'utf8', timeout: 3000 }).trim();
+          const status = execFileSync('git', ['-C', root, 'status', '--porcelain'], { encoding: 'utf8', timeout: 3000 });
+          const dirty = status.split('\n').filter(Boolean).map((l) => l.slice(0, 2) + ' ' + l.slice(3));
+          return { branch, dirty };
+        } catch (e) {
+          return { branch: '', dirty: [], error: e.message };
+        }
       },
     },
   ]);
