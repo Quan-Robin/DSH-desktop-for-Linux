@@ -3,7 +3,7 @@
 本项目的版本更新说明。发布 GitHub Release 时同步引用本文件对应条目。
 
 
-## Unreleased
+## 0.1.38 (2026-09-12)
 
 - **新增：轮次统计（伴生插件 v0.4）**——插件自事件流计算每轮 TTFT（首字延迟）、输出速度（tok/s）、轮耗时、缓存命中率，`/api/state` 暴露 `lastTurn`；文件面板「概览」卡新增三行实时展示
 - **新增：会话导出 Markdown**——本地会话文件直出（页面无下载环节）：页内右键菜单「导出为 Markdown」/ 调色板会话模式 `Ctrl+E`，生成到系统下载目录并在文件管理器中定位；导出器为纯函数（`src/session-export.js`，含单测）
@@ -12,6 +12,9 @@
 - **新增：错误系统通知**——伴生插件识别错误类事件（`turn/error`/`session/error` 等 ADAPTER 列表），`/api/state.lastError` 暴露；桌面端弹系统通知（点击聚焦主窗口），`notifyOnError` 配置可关，新一轮 user/message 自动清除
 - **修复：伴生插件一键安装的文件清单**——补齐 lib/ 下 client 资源（client-menu/files-panel-client/ws-tree）与 cordis.patch.yml
 
+- **修复：dsh 0.1.5+ 适配（实测破坏性变更）**——① **token 认证**：0.1.5+ 的 Web UI 需 `?token=…`（无 token 请求根路径返回 401），外壳现从 dsh 输出与 dsh.log 捕获 token 并带参加载，且 `isServerUp` 认 401（特征文本）为存活——此前 `res.ok` 判定使 120s 启动等待超时、复用/重启路径失效；② **spawn 加 `--no-open`**：0.1.5+ 默认拉起系统浏览器，UI 应归桌面端窗口；③ **伴生插件 inject 移除 `apiProxy`**（0.1.5+ 已删除该服务，硬声明会 pending 并拖垮整棵插件树）
+- **修复：伴生插件客户端 bundle 的 ASI 缺陷（插件 v0.4.2）**——v0.3 合并页内文件面板脚本时 `__ModuleLoader__.load({…})` 后缺分号，被解析为链式调用抛错；dsh 0.1.5+ 以合并流加载全部 client bundle，单点抛错连坐其后所有插件（连环 Failed to load plugins / loaded without registering）
+- **兼容提示**：dsh 0.1.5+ 另有两处破坏性变更——`@deepseek-ai/dsh-client-runtime` 拆包（`defineStore` 迁至 `@deepseek-ai/dsh-client-store`）、客户端模块表新增「平台种子词」白名单；第三方插件的 client 需自行适配
 ## 0.1.37 (2026-08-18)
 
 - **修复（真实 dsh 适配，伴生插件）**：Linux 真机验证中发现并修复 dsh 插件 API 假设——安装 patch 由 `include:` 改为 `insert:` 并注入 `webServer`/`apiProxy`；事件总线改用 `session/event` + `session/created`；HTTP 路由改用 `webServer.register`；`/api/prompt` 改走 `apiProxy.sessions.prompt`；`/api/approve` 通过 `approval/request` answerer 直接审批。移除不兼容的 `ctx.desktopPlugin` 赋值。
