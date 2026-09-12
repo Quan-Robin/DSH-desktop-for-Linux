@@ -545,7 +545,7 @@ window.__ModuleLoader__.load({
     module.exports.registry = registry
     return module.exports
   },
-})
+});
 
 /*---- files panel (v0.3) ----*/
 // In-page right-side file panel for dsh-plugin-desktop v0.3.
