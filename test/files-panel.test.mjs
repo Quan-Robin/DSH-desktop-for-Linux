@@ -4,7 +4,7 @@
 // The user asked to model the panel on the Reasonix/Codex screenshots:
 // light theme, tabs 概览/文件/改动, an Overview page with real session
 // stats (cost, turn cost, tokens, hit-rate bar, balance), and the file
-// search folded into the Files tab as a "筛选文件…" filter.
+// Tabs are 概览 / 改动 / 终端 — the 文件 tab was removed at the user's request.
 //
 // This test parses the HTML and asserts the structural contract so a
 // regression to the old dark 文件/搜索/变更 layout fails loudly.
@@ -21,12 +21,24 @@ assert.match(html, /color-scheme:\s*light/, 'panel must declare light color-sche
 assert.match(html, /--bg:\s*#f7f7f8/, 'panel must use the Reasonix/Codex light background');
 assert.doesNotMatch(html, /--bg:\s*#17171c/, 'dark background from the previous theme must be gone');
 
-// --- tabs: 概览 / 文件 / 改动 (no standalone 搜索 tab) ---
+// --- tabs: 概览 / 改动 / 终端（用户决定删掉「文件」栏）---
 assert.match(html, /id="tab-overview"/, 'overview tab must exist');
-assert.match(html, /id="tab-files"/, 'files tab must exist');
 assert.match(html, /id="tab-git"/, 'git tab must exist');
+assert.match(html, /id="tab-term"/, 'terminal tab must exist');
+assert.doesNotMatch(html, /id="tab-files"/, 'files tab must be gone (removed by user request)');
+assert.doesNotMatch(html, /id="page-files"/, 'files page must be gone');
+assert.doesNotMatch(html, /id="file-q"/, 'files filter input must be gone');
+assert.doesNotMatch(html, /id="tree"/, 'file tree container must be gone');
 assert.doesNotMatch(html, /id="tab-search"/, 'standalone search tab must be removed');
 assert.doesNotMatch(html, /id="page-search"/, 'standalone search page must be removed');
+
+// tab list in setTab must match the DOM (a stale name throws at click time)
+const tabList = html.match(/for \(const t of \[([^\]]*)\]\)/);
+assert.ok(tabList, 'setTab must iterate a tab list');
+for (const t of ['overview', 'git', 'term']) {
+  assert.ok(tabList[1].includes(`'${t}'`), `setTab list must include ${t}`);
+}
+assert.ok(!tabList[1].includes("'files'"), 'setTab list must not reference the removed files tab');
 
 // default active tab is 概览
 assert.match(html, /class="tab active" id="tab-overview"/, 'overview tab is the default active tab');
@@ -43,17 +55,14 @@ for (const id of [
 assert.ok(html.includes('window.desktop.statsGet()'), 'overview must read stats via IPC');
 assert.ok(html.includes('window.desktop.getBalance()'), 'overview balance must read via IPC');
 
-// --- files tab: filter input merged search ---
-assert.match(html, /id="file-q"/, 'files tab must have a filter/search input');
-assert.match(html, /筛选文件…/, 'filter input must have the Codex-style "筛选文件…" placeholder (zh)');
-assert.match(html, /window\.desktop\.wsSearch/, 'filter must call the workspace content search');
-
-// --- files tab still has tree interaction + preview ---
-assert.match(html, /window\.desktop\.wsList/, 'file tree still loads via wsList');
+// --- preview must survive the files-tab removal ---
 assert.match(html, /window\.desktop\.insertComposer/, 'click-to-reference still works');
-assert.match(html, /window\.desktop\.wsPeek/, 'double-click preview still works');
+assert.match(html, /window\.desktop\.wsPeek/, 'preview still works');
 
 // --- changes tab still wired ---
 assert.match(html, /window\.desktop\.wsGit/, 'git tab still reads status/diff');
+
+// --- terminal tab still wired ---
+assert.match(html, /api\/shell/, 'terminal tab still connects to the shell bridge');
 
 console.log('files-panel structural contract OK');

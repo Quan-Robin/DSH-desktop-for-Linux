@@ -1837,6 +1837,34 @@ const usageCache = new Map();
 // Re-entrancy guard: the 10s timer and manual refreshes share one in-flight
 // request; callers get the same promise instead of stacking fetches.
 let balancePromise = null;
+// A manual session pick is honored only while it is fresh and still agrees
+// with where the user is actually working. Otherwise the overview pins itself
+// to an old session and every number reads 0 / —.
+const MANUAL_PICK_TTL_MS = 30 * 60 * 1000;
+
+function honorManualPick(server, plugin) {
+  if (!config.balanceSessionIdManual || !config.balanceSessionId) return false;
+  if (server && !server.some((s) => s.id === config.balanceSessionId)) return false;
+  const at = Number(config.balanceSessionIdAt) || 0;
+  if (at > 0 && Date.now() - at > MANUAL_PICK_TTL_MS) {
+    // Stale pick: fall back to the companion plugin's current session.
+    if (!plugin || !plugin.state || plugin.state.currentSessionId !== config.balanceSessionId) {
+      config.balanceSessionIdManual = false;
+      saveConfig();
+      return false;
+    }
+  }
+  // Even a fresh pick yields to the plugin when the user has clearly moved on
+  // to a different session.
+  if (plugin && plugin.state && plugin.state.currentSessionId
+      && plugin.state.currentSessionId !== config.balanceSessionId) {
+    config.balanceSessionIdManual = false;
+    saveConfig();
+    return false;
+  }
+  return true;
+}
+
 function refreshBalance() {
   if (balancePromise) return balancePromise;
   balancePromise = doRefresh().finally(() => { balancePromise = null; });
@@ -1960,7 +1988,7 @@ async function doRefresh() {
     cwd: cwdById.get(s.id) || null,
   }));
   let activeId = null;
-  if (config.balanceSessionIdManual && config.balanceSessionId && (!server || server.some((s) => s.id === config.balanceSessionId))) {
+  if (honorManualPick(server, plugin)) {
     // Manual override (balance page / deep link): the user explicitly picked
     // this session. Sniffed ids set balanceSessionId WITHOUT the manual flag,
     // so they never outrank the companion plugin below.
@@ -2619,6 +2647,7 @@ function registerSettingsIpc() {
   ipcMain.handle('settings:set-current-session', (_e, id) => {
     config.balanceSessionId = typeof id === 'string' ? id : '';
     config.balanceSessionIdManual = !!config.balanceSessionId;
+    config.balanceSessionIdAt = Date.now();
     saveConfig();
     refreshBalance();
   });

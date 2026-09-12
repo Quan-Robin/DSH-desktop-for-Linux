@@ -202,7 +202,6 @@
 
 <div id="tabs">
   <div class="tab active" id="tab-overview" data-i18n="tabOverview">概览</div>
-  <div class="tab" id="tab-files" data-i18n="tabFiles">文件</div>
   <div class="tab" id="tab-git" data-i18n="tabGit">改动</div>
   <div class="tab" id="tab-term" data-i18n="tabTerm">终端</div>
 </div>
@@ -243,14 +242,6 @@
       <div class="row-line"><span class="k" data-i18n="estimated">估算</span><span class="v" id="ov-estimated">—</span></div>
     </div>
   </div>
-</div>
-
-<div class="page" id="page-files">
-  <div id="filterbar">
-    <input id="file-q" placeholder="" spellcheck="false">
-  </div>
-  <div id="tree" style="overflow:auto; padding: 4px 6px 12px;"></div>
-  <div id="search-results" style="display:none;"></div>
 </div>
 
 <div class="page" id="page-git">
@@ -310,9 +301,8 @@
   const d = () => DICT[lang] || DICT.zh;
 
   const els = {
-    ws: document.getElementById('ws'), tree: document.getElementById('tree'),
+    ws: document.getElementById('ws'),
     preview: document.getElementById('preview'), pvTitle: document.getElementById('pv-title'), pvBody: document.getElementById('pv-body'),
-    searchQ: document.getElementById('file-q'), searchResults: document.getElementById('search-results'),
     gitBranch: document.getElementById('git-branch'), gitFiles: document.getElementById('git-files'), diff: document.getElementById('diff'),
     ovCost: document.getElementById('ov-cost'), ovTurn: document.getElementById('ov-turn'), ovHit: document.getElementById('ov-hit'), ovHitbar: document.getElementById('ov-hitbar'),
     ovIn: document.getElementById('ov-in'), ovCache: document.getElementById('ov-cache'), ovOut: document.getElementById('ov-out'),
@@ -322,9 +312,7 @@
   };
   let wsState = { list: [], currentPath: '', currentSessionId: null };
   let selectedRoot = '';   // '' = follow current session cwd
-  const expanded = new Set();
   let previewEntry = null;
-  let searchMode = false;   // true when the file filter box shows search results instead of the tree
 
   function applyLang() {
     document.querySelectorAll('[data-i18n]').forEach((el) => {
@@ -368,73 +356,6 @@
       if (w.path === selectedRoot) o.selected = true;
       sel.appendChild(o);
     }
-  }
-
-  async function loadDir(rel) {
-    const root = activeRoot();
-    if (!root) { els.tree.innerHTML = `<div class="empty">${d().noWs}</div>`; return; }
-    const res = await window.desktop.wsList(root, rel);
-    if (!res || !res.ok) { els.tree.innerHTML = `<div class="empty">${(res && res.error) || '—'}</div>`; return; }
-    if (rel === '') {
-      els.tree.textContent = '';
-      for (const e of res.entries) els.tree.appendChild(nodeEl(e, 0));
-      if (!res.entries.length) els.tree.innerHTML = `<div class="empty">${d().emptyDir}</div>`;
-      if (res.truncated) els.tree.insertAdjacentHTML('beforeend', `<div class="trunc">${d().truncated}</div>`);
-    }
-    return res;
-  }
-
-  const ICONS = { js: '🟨', mjs: '🟨', ts: '🟦', json: '🟪', md: '📝', py: '🐍', sh: '🐚', html: '🌐', css: '🎨', png: '🖼️', jpg: '🖼️', gif: '🖼️', svg: '🖼️', rs: '🦀', go: '🐹', c: '🔧', h: '🔧', cpp: '🔧', yml: '⚙️', yaml: '⚙️', toml: '⚙️', lock: '🔒' };
-
-  function nodeEl(entry, depth) {
-    const div = document.createElement('div');
-    const isDir = entry.type === 'directory';
-    div.className = 'node ' + (isDir ? 'dir' : 'file');
-    div.style.setProperty('--d', depth);
-    const tw = document.createElement('span');
-    tw.className = 'tw';
-    tw.textContent = isDir ? (expanded.has(entry.rel) ? '▾' : '▸') : (ICONS[(entry.name.split('.').pop() || '').toLowerCase()] || '📄');
-    div.appendChild(tw);
-    const nm = document.createElement('span');
-    nm.className = 'nm';
-    nm.textContent = entry.name;
-    div.appendChild(nm);
-    div.title = `${entry.path}\n${d().clickHint}`;
-    if (isDir) {
-      div.addEventListener('click', async () => {
-        const kids = div.nextElementSibling;
-        if (expanded.has(entry.rel)) {
-          expanded.delete(entry.rel);
-          tw.textContent = '▸';
-          if (kids && kids.dataset.sub === entry.rel) kids.remove();
-        } else {
-          expanded.add(entry.rel);
-          tw.textContent = '▾';
-          const sub = document.createElement('div');
-          sub.dataset.sub = entry.rel;
-          const res = await loadDirSub(entry.rel);
-          if (res && res.ok) {
-            for (const e of res.entries) sub.appendChild(nodeEl(e, depth + 1));
-            if (res.truncated) sub.insertAdjacentHTML('beforeend', `<div class="trunc">${d().truncated}</div>`);
-            if (!res.entries.length) sub.innerHTML = `<div class="empty">${d().emptyDir}</div>`;
-          } else {
-            sub.innerHTML = `<div class="empty">${(res && res.error) || '—'}</div>`;
-          }
-          if (kids && kids.dataset.sub === entry.rel) kids.replaceWith(sub);
-          else div.after(sub);
-        }
-      });
-    } else {
-      div.addEventListener('click', () => { window.desktop.insertComposer(markerFor(entry)); });
-      div.addEventListener('dblclick', () => openPreview(entry));
-    }
-    return div;
-  }
-
-  async function loadDirSub(rel) {
-    const root = activeRoot();
-    if (!root) return null;
-    return window.desktop.wsList(root, rel);
   }
 
   async function openPreview(entry) {
@@ -500,23 +421,19 @@
     const st = await window.desktop.wsState();
     if (st) wsState = st;
     renderWsOptions();
-    expanded.clear();
     els.preview.hidden = true;
-    await loadDir('');
   }
 
   // ---- tabs ----
   function setTab(name) {
-    for (const t of ['overview', 'files', 'git', 'term']) {
+    for (const t of ['overview', 'git', 'term']) {
       document.getElementById('tab-' + t).classList.toggle('active', t === name);
       document.getElementById('page-' + t).classList.toggle('active', t === name);
     }
     if (name === 'git') refreshGit();
-    if (name === 'files') els.searchQ.focus();
     if (name === 'term') ensureTerminal();
   }
   document.getElementById('tab-overview').addEventListener('click', () => setTab('overview'));
-  document.getElementById('tab-files').addEventListener('click', () => setTab('files'));
   document.getElementById('tab-git').addEventListener('click', () => setTab('git'));
   document.getElementById('tab-term').addEventListener('click', () => setTab('term'));
 
@@ -578,46 +495,6 @@
   els.termStatus.style.cursor = 'pointer';
   els.termStatus.addEventListener('click', () => { if (term && term.dead) setTab('term'); });
 
-  // ---- file filter: empty → tree, text → workspace content search ----
-  let searchTimer = null;
-  let searchSeq = 0;
-  async function runSearch() {
-    const q = els.searchQ.value.trim();
-    const root = activeRoot();
-    searchMode = q.length > 0;
-    if (searchMode) {
-      els.tree.style.display = 'none';
-      els.searchResults.style.display = '';
-      if (!root) { els.searchResults.innerHTML = `<div class="empty">${d().noResults}</div>`; return; }
-      els.searchResults.innerHTML = `<div class="empty">${d().searching}</div>`;
-      const seq = ++searchSeq;
-      const r = await window.desktop.wsSearch(root, q);
-      if (seq !== searchSeq) return;
-      els.searchResults.textContent = '';
-      if (!r || !r.ok || !r.results.length) { els.searchResults.innerHTML = `<div class="empty">${(r && r.error) || d().noResults}</div>`; return; }
-      for (const hit of r.results) {
-        const div = document.createElement('div');
-        div.className = 'hit';
-        const where = document.createElement('div');
-        where.className = 'where';
-        where.textContent = `${hit.rel}:${hit.line}`;
-        div.appendChild(where);
-        const what = document.createElement('div');
-        what.className = 'what';
-        what.textContent = hit.text;
-        div.appendChild(what);
-        div.addEventListener('click', () => openPreview({ name: hit.rel.split('/').pop(), path: hit.path, rel: hit.rel, type: 'file' }));
-        els.searchResults.appendChild(div);
-      }
-    } else {
-      els.searchResults.style.display = 'none';
-      els.tree.style.display = '';
-      expanded.clear();
-      loadDir('');
-    }
-  }
-  els.searchQ.addEventListener('input', () => { clearTimeout(searchTimer); searchTimer = setTimeout(runSearch, 250); });
-
   // ---- git review (read-only status + diff) ----
   async function refreshGit() {
     const root = activeRoot();
@@ -647,7 +524,7 @@
   }
   document.getElementById('git-refresh').addEventListener('click', refreshGit);
 
-  els.ws.addEventListener('change', () => { selectedRoot = els.ws.value; expanded.clear(); loadDir(''); });
+  els.ws.addEventListener('change', () => { selectedRoot = els.ws.value; refreshGit(); });
   document.getElementById('btn-refresh').addEventListener('click', () => { refreshWsState(); refreshStats(); });
   document.getElementById('btn-opendir').addEventListener('click', () => {
     const root = activeRoot();
