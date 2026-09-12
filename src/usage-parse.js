@@ -93,23 +93,27 @@ async function parseUsageFile(file) {
           lastSummary = msgText;
           continue;
         }
+        // dsh 0.1.5-rc.1 moved usage to data.usage (<=0.1.4: data.chunk.usage), and
+        // the events that actually carry it are `assistant/message` — so usage must
+        // be read BEFORE the per-type early continues, otherwise every number is 0.
+        const u = ev.data?.usage || ev.data?.chunk?.usage;
+        if (u) {
+          const model = currentModel || 'unknown';
+          const norm = {
+            input: u.inputTokens || 0,
+            cacheRead: u.cacheReadTokens || 0,
+            output: u.outputTokens || 0,
+            reasoning: u.reasoningTokens || 0,
+          };
+          const bm = (byModel[model] = byModel[model] || emptyUsage());
+          addUsage(bm, norm);
+          const um = (userMsgByModel[model] = userMsgByModel[model] || emptyUsage());
+          addUsage(um, norm);
+        }
         if (ev.type === 'assistant/message') {
           msgText = extractText(ev.data?.message?.content) || msgText;
           continue;
         }
-        const u = ev.data?.chunk?.usage;
-        if (!u) continue;
-        const model = currentModel || 'unknown';
-        const norm = {
-          input: u.inputTokens || 0,
-          cacheRead: u.cacheReadTokens || 0,
-          output: u.outputTokens || 0,
-          reasoning: u.reasoningTokens || 0,
-        };
-        const bm = (byModel[model] = byModel[model] || emptyUsage());
-        addUsage(bm, norm);
-        const um = (userMsgByModel[model] = userMsgByModel[model] || emptyUsage());
-        addUsage(um, norm);
       } catch { /* skip malformed lines */ }
     }
   } catch { /* unreadable file: skip */ }

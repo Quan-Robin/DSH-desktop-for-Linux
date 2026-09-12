@@ -1376,7 +1376,7 @@ function injectSessionMenu() {
     if (!sessionMenuJs) {
       // Both in-page modules: context menu/pins + shell bridge (composer
       // insert, workspace report, files-panel toggle button).
-      sessionMenuJs = ['session-menu.js', 'shell-bridge.js']
+      sessionMenuJs = ['session-menu.js', 'shell-bridge.js', 'sidebar-reflow.js']
         .map((f) => fs.readFileSync(path.join(__dirname, 'inject', f), 'utf8'))
         .join('\n;\n');
     }
