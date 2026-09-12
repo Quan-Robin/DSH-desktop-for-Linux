@@ -285,8 +285,21 @@ function saveConfig() {
   }
 }
 
+// dsh 0.1.5+ guards the Web UI with a per-run token (printed once as
+// `dsh web: http://127.0.0.1:<port>/?token=…`). The shell must load the UI
+// with that token — without it the page only says "authentication required".
+let webToken = null;
+function captureWebToken(text) {
+  const re = /[?&]token=([A-Za-z0-9_-]{8,})/g;
+  let m, last = null;
+  while ((m = re.exec(String(text || '')))) last = m[1];
+  if (last) { webToken = last; return true; }
+  return false;
+}
+
 function appUrl() {
-  return `http://127.0.0.1:${config.port}`;
+  const base = `http://127.0.0.1:${config.port}`;
+  return webToken ? `${base}/?token=${encodeURIComponent(webToken)}` : base;
 }
 
 // ---------- dsh server management ----------
@@ -294,7 +307,14 @@ function appUrl() {
 async function isServerUp(port) {
   try {
     const res = await fetch(`http://127.0.0.1:${port}/`);
-    return res.ok;
+    if (res.ok) return true;
+    // dsh 0.1.5+ guards the UI with a token: a tokenless request gets 401
+    // with a recognizable body — still proof the server is alive.
+    if (res.status === 401) {
+      const text = await res.text().catch(() => '');
+      return /dsh web authentication required/i.test(text);
+    }
+    return false;
   } catch {
     return false;
   }
@@ -316,6 +336,7 @@ function waitForServer(port, timeoutMs, onTick) {
 // Cap dsh.log so a long-lived instance cannot grow it without bound.
 const LOG_MAX_BYTES = 5 * 1024 * 1024;
 function logDshLine(buf) {
+  captureWebToken(buf); // pick up `dsh web: …?token=…` as soon as it prints
   try {
     const file = path.join(app.getPath('userData'), 'dsh.log');
     // Cheap rotation: past the cap, drop the front half instead of appending.
@@ -964,6 +985,13 @@ async function boot() {
   if (await isServerUp(config.port)) {
     // A dsh server is already running on this port — reuse it.
     console.log(`[boot] reusing existing dsh on ${config.port}`);
+    // No spawn output this run: recover the web token from the dsh.log tail.
+    if (!webToken) {
+      try {
+        const logFile = path.join(app.getPath('userData'), 'dsh.log');
+        captureWebToken(fs.readFileSync(logFile, 'utf8').slice(-8000));
+      } catch { /* older dsh builds print no token */ }
+    }
     mainView.webContents.loadURL(appUrl());
     return;
   }
