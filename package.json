@@ -19,7 +19,7 @@
     "dist": "electron-builder --linux",
     "dist:portable": "electron-builder --linux dir --config build.portable.json && bash scripts/package-portable.sh",
     "bundle": "bash scripts/download-bundled.sh",
-    "test": "node test/desktop-utils.test.mjs && node test/ws-tree.test.mjs && node test/session-menu.test.mjs && node test/shell-bridge.test.mjs && node test/files-panel.test.mjs && node plugin/dsh-plugin-desktop/test/run.mjs"
+    "test": "node test/desktop-utils.test.mjs && node test/ws-tree.test.mjs && node test/session-menu.test.mjs && node test/shell-bridge.test.mjs && node test/files-panel.test.mjs && node test/session-export.test.mjs && node plugin/dsh-plugin-desktop/test/run.mjs && node plugin/dsh-plugin-desktop/test/compat.test.mjs"
   },
   "build": {
     "appId": "com.quanrobin.dsh-desktop",
@@ -65,6 +65,8 @@
   "dependencies": {
     "dbus-next": "^0.10.2",
     "electron-updater": "^6.8.9",
-    "fzstd": "^0.1.1"
+    "fzstd": "^0.1.1",
+    "@xterm/xterm": "^6.0.0",
+    "@xterm/addon-fit": "^0.11.0"
   }
 }

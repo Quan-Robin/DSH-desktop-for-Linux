@@ -20,10 +20,13 @@
 - **关闭行为**：默认关闭窗口 = 隐藏到托盘（可在配置中关闭）
 - **伴生插件（独立仓库发布，可选增强，非本应用依赖）**：[dsh-plugin-desktop](https://github.com/Quan-Robin/dsh-plugin-desktop)（`dsh plugin add github:Quan-Robin/dsh-plugin-desktop` 安装，或托盘/设置页一键安装）。**定位：大部分桌面端功能 + 小部分插件功能**——安装后解锁：当前会话感知（替代请求嗅探）、实时轮次状态、快捷输入发送通道、页内完整右键菜单与「置顶会话」扩展（client 注入）。**未安装时**：本应用仍完整可用，仅这些增强能力不生效（保持极简原版体验），右键/置顶/文件面板等页内功能此时由应用自身注入提供（见下条）
 - **页内右键菜单 + 置顶会话（免插件）**：会话/工作区/输入框/链接的完整右键菜单（适配自社区 [dsh-session-context-menu](https://github.com/baihejiangnan/dsh-session-context-menu)（baihejiangnan），MIT；检测到原版插件时自动让位并把「置顶」注册进其扩展菜单）；「📌 置顶」独立分区显示在会话列表上方——不动原列表、不影响按时间排序，置顶状态由桌面端保管，托盘也可直达
-- **右侧文件面板（Ctrl+Shift+E，免插件）**：当前工作区文件树（懒加载、噪声目录过滤），单击插入 `[file: 路径]` 引用、双击预览、📂 打开工作区目录（右侧栏参考社区 [dsh-workspace-explorer](https://github.com/3911ee/dsh-workspace-explorer)，MIT）；「搜索」标签全文找文件、「变更」标签看 git 状态与 diff；统计条显示当前会话 tokens（官方接口）与会话/本轮花费（复用余额估算链路）
+- **右侧文件面板（Ctrl+Shift+E，免插件）**：当前工作区文件树（懒加载、噪声目录过滤），单击插入 `[file: 路径]` 引用、双击预览、📂 打开工作区目录（右侧栏参考社区 [dsh-workspace-explorer](https://github.com/3911ee/dsh-workspace-explorer)，MIT）；「搜索」标签全文找文件、「变更」标签看 git 状态与 diff、「终端」标签停靠 PTY 终端（需伴生插件 v0.4，经 dsh `spawnTerminal` 接缝，xterm.js）；概览卡显示会话 tokens、会话/本轮花费（复用余额估算链路）与 TTFT/输出速度/轮耗时（伴生插件自算）
 - **会话调色板**：`Ctrl+Shift+P` 模糊切换会话（带 ● 未读标记）、`Ctrl+Shift+F` 跨会话全文搜索——结果点击直达
 - **审批直达**：DSH 等待工具审批时弹原生通知 + 小弹窗（批准/拒绝/详情，需伴生插件）；DS-pet 桌宠同步提醒并可直接批准/拒绝
 - **路径直达**：Ctrl+点击对话中的文件路径 → 文件管理器定位
+- **会话导出 Markdown**：页内右键「导出为 Markdown」/ 调色板 `Ctrl+E`——本地会话文件直出到下载目录（无需浏览器下载）
+- **Prompt 模板库**：`Ctrl+Shift+T` 调色板模板模式，本地 JSON 持久化，点选插入输入框，`Ctrl+S` 保存新模板
+- **错误通知**：DSH 运行出错时系统通知（需伴生插件 v0.4，`notifyOnError` 可关）
 - **全局快捷输入**：`Ctrl+Shift+D` 任意位置唤出迷你输入条，Enter 发送到当前会话（需伴生插件；快捷键在 config.json 的 `quickInputShortcut` 修改）；拖到窗口、页面未处理的文件会以路径填入输入条
 - **窗口记忆 / deep link / 多 profile**：窗口位置大小跨重启保留（拔屏自动回退）；`dsh://session/<id>` 从外部定位会话；多套 DSH_HOME+端口配置一键切换（托盘「配置」），账号/项目互不串数据
 - **日志**：dsh 子进程输出写入 `userData/dsh.log`，便于排查问题

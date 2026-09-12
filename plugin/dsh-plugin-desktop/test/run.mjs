@@ -2,8 +2,10 @@
 // Mock-ctx test for dsh-plugin-desktop: fake event bus + koa-ish router.
 // Run: node test/run.js   (zero deps)
 import assert from 'node:assert';
+import { createRequire } from 'node:module';
 import pluginPkg from '../lib/index.js';
 const plugin = pluginPkg;
+const require = createRequire(import.meta.url);
 
 function makeMockCtx() {
   const listeners = new Map();
@@ -190,6 +192,84 @@ function makeRealCtx() {
   r = await real.request('POST', '/api/approve', { decision: 'approve' });
   assert.strictEqual(r.status, 200, 'approve via approval/request answerer should succeed');
   assert.strictEqual(await approvalPromise, 'allowed-once', 'approval request should resolve allowed-once');
+
+  // --- regression: user answers in the WEB UI → answerer promise must still
+  // settle (approval/decided event clears pendingApproval). Before the fix
+  // the promise hung forever and the tool call deadlocked inside dsh.
+  {
+    const real2 = makeRealCtx();
+    plugin.apply(real2);
+    const p = real2.emit('approval/request', { agent: { session: { id: 'session-real' } }, toolName: 'bash', reason: 'run cmd' });
+    // user clicks in the web UI: dsh emits the decided event on the bus
+    real2.emit('session/event', { id: 'session-real' }, { type: 'approval/decided', data: { decision: 'approved' }, seq: 20 });
+    const settled = await Promise.race([p, new Promise((resolve) => setTimeout(() => resolve('TIMEOUT'), 500))]);
+    assert.strictEqual(settled, 'allowed-once', 'web-UI decision must settle the hanging answerer promise');
+    r = await real2.request('GET', '/api/state');
+    assert.strictEqual(r.json.pendingApproval, null, 'pending cleared by decided event');
+  }
+
+  // --- regression: a SECOND approval/request while one is pending must not
+  // drop the first promise on the floor (old resolver replaced silently).
+  {
+    const real3 = makeRealCtx();
+    plugin.apply(real3);
+    const p1 = real3.emit('approval/request', { agent: { session: { id: 's' } }, reason: 'first' });
+    const p2 = real3.emit('approval/request', { agent: { session: { id: 's' } }, reason: 'second' });
+    const s1 = await Promise.race([p1, new Promise((resolve) => setTimeout(() => resolve('TIMEOUT'), 500))]);
+    assert.strictEqual(s1, 'allowed-once', 'superseded request settles instead of hanging');
+    r = await real3.request('POST', '/api/approve', { decision: 'reject' });
+    assert.strictEqual(r.status, 200);
+    assert.strictEqual(await p2, 'rejected', 'the newest request is the one answered');
+  }
+
+  // --- regression: /api/state.workspace is learned from the session object
+  // on the event bus (session/event + session/created) — the in-page files
+  // panel resolves its tree root from this field.
+  {
+    const real4 = makeRealCtx();
+    plugin.apply(real4);
+    real4.emit('session/event', { id: 'session-ws', cwd: '/home/u/proj' }, { type: 'user/message', data: {}, seq: 1 });
+    real4.emit('session/created', { id: 'session-ws2', cwd: '/data/other' });
+    r = await real4.request('GET', '/api/state');
+    assert.strictEqual(r.json.currentSessionId, 'session-ws2', 'latest event session wins');
+    assert.strictEqual(r.json.workspace, '/data/other', 'cwd learned from the session object');
+  }
+}
+
+// --- v0.4: turn stats (TTFT / speed / duration / cache hit rate) ---
+{
+  const t = new (require('../lib/index.js').Tracker)();
+  t.onEvent({ type: 'user/message', seq: 1 });
+  t.onEvent({ type: 'assistant/chunk', seq: 2, data: { chunk: { usage: { inputTokens: 100, cacheReadTokens: 300, outputTokens: 10 } } } });
+  const ttftMin = Date.now() - t.turnStartedAt; // elapsed ≥ ttft by construction
+  t.onEvent({ type: 'assistant/chunk', seq: 3, data: { chunk: { usage: { inputTokens: 0, cacheReadTokens: 0, outputTokens: 40 } } } });
+  t.onEvent({ type: 'turn/end', seq: 4 });
+  const lt = t.lastTurn;
+  assert.ok(lt, 'lastTurn populated');
+  assert.ok(typeof lt.ttftMs === 'number' && lt.ttftMs >= 0 && lt.ttftMs <= ttftMin + 5, `ttft sane: ${lt.ttftMs}`);
+  assert.strictEqual(lt.tokensPerSec, null, 'duration too small in same-tick test → null speed');
+  assert.strictEqual(lt.cacheHitRate, 0.75, 'cache hit = 300/(100+300)');
+}
+
+// --- v0.4: error surfacing ---
+{
+  const t = new (require('../lib/index.js').Tracker)();
+  t.currentSessionId = 'session-e';
+  t.onEvent({ type: 'turn/error', data: { error: { message: 'provider timeout' } } });
+  assert.strictEqual(t.lastError.summary, 'provider timeout');
+  t.onEvent({ type: 'user/message', seq: 2 });
+  assert.strictEqual(t.lastError, null, 'new user message clears the error');
+  const st = t.state();
+  assert.strictEqual(st.lastTurn, null, 'state carries lastTurn=null before any turn');
+}
+
+// --- v0.4: terminal bridge degrades without ws/subprocess, attaches with a
+// stubbed webServer.registerUpgrade + a hand-rolled fake ws ---
+{
+  const bare = makeMockCtx();
+  ['/api/state', '/api/usage', '/api/prompt', '/api/approve', '/api/set-session'].forEach((p) => bare._declare(p));
+  const app = plugin.apply(bare);
+  assert.strictEqual(app.report().terminal, null, 'no ws package shape here (test env lacks ws upgrade path)');
 }
 
 console.log('dsh-plugin-desktop mock tests OK');

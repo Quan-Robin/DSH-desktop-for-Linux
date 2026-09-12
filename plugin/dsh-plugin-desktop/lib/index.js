@@ -66,6 +66,22 @@ const SESSION_ID_PATHS = [
 // ── ADAPTER: approval event names (extend when adapting to a real dsh) ────
 let pendingApprovalResolver = null;
 
+// session id → workspace cwd, learned from session objects on the event bus
+// (session/event + session/created). Read by /api/state's `workspace` field
+// for the in-page files panel.
+const sessionCwds = new Map();
+
+// Resolve (or drop) the hanging answerer promise. Every path that clears
+// tracker.pendingApproval MUST go through this — an unresolved answerer
+// leaves the tool call waiting forever inside dsh.
+function settleApprovalResolver(value) {
+  if (typeof pendingApprovalResolver === 'function') {
+    const resolve = pendingApprovalResolver;
+    pendingApprovalResolver = null;
+    try { resolve(value); } catch { /* already settled */ }
+  }
+}
+
 const APPROVAL_REQUEST_TYPES = new Set([
   'tool/approval', 'tool/approval:request', 'approval/request', 'approval/asked',
   'permission/request', 'session/question', 'tool/waiting',
@@ -74,6 +90,12 @@ const APPROVAL_CLEAR_TYPES = new Set([
   'tool/approval:response', 'approval/response', 'approval:resolve', 'approval/decided',
   'permission/response', 'session/answer',
 ]);
+
+// ── ADAPTER: error event names (extend when adapting to a real dsh) ───────
+// Error event names live in compat.js — version-aware table
+// (`agent/*` on 0.1.2-alpha.1, `turn/*` guesses on 0.1.0-rc.*).
+const { ERROR_EVENT_NAMES, spawnTerminalCompat } = require('./compat');
+const ERROR_REQUEST_TYPES = new Set(ERROR_EVENT_NAMES);
 
 function sessionIdOf(ev) {
   for (const get of SESSION_ID_PATHS) {
@@ -91,6 +113,12 @@ class Tracker {
     this.sessions = new Map(); // id -> record
     this.totalByModel = {};
     this.pendingApproval = null; // { id, summary, since } | null
+    this.lastError = null; // { summary, since, sessionId } | null
+    // ── turn stats (self-computed from the event stream) ──
+    this.turnStartedAt = 0;      // Date.now() of the current user/message
+    this.turnFirstChunkAt = 0;   // first assistant/chunk after it (→ TTFT)
+    this.turnTokens = { input: 0, cacheRead: 0, output: 0 };
+    this.lastTurn = null; // { ttftMs, durationMs, tokensPerSec, cacheHitRate } | null
   }
 
   record(id) {
@@ -121,6 +149,12 @@ class Tracker {
     this.record(id);
   }
 
+  // Workspace cwd of a session (learned from session objects on the bus) —
+  // alpha.1's spawnTerminal requires a cwd for the terminal bridge.
+  workspaceOf(id) {
+    return (id && sessionCwds.get(id)) || '';
+  }
+
   // One event from the dsh event stream (same JSON objects that get appended
   // to session.jsonl.zstd). Unknown/malformed events are ignored.
   onEvent(ev) {
@@ -142,12 +176,29 @@ class Tracker {
       for (const k of Object.keys(r.userMsgByModel)) delete r.userMsgByModel[k];
       r.msgText = '';
       this.turn = 'working';
+      this.lastError = null; // a new user message supersedes any prior error
+      // ── turn stats: new turn window ──
+      this.turnStartedAt = Date.now();
+      this.turnFirstChunkAt = 0;
+      this.turnTokens = { input: 0, cacheRead: 0, output: 0 };
       return;
     }
     if (ev.type === 'turn/end') {
       r.lastTurnEndSeq = ev.seq || r.lastTurnEndSeq;
       r.lastSummary = r.msgText;
       this.turn = 'idle';
+      // ── turn stats: finalize (guard against missing/clock-skewed data) ──
+      const dur = this.turnStartedAt ? Date.now() - this.turnStartedAt : 0;
+      const inTok = this.turnTokens.input + this.turnTokens.cacheRead;
+      this.lastTurn = {
+        ttftMs: this.turnFirstChunkAt && this.turnStartedAt
+          ? Math.max(0, this.turnFirstChunkAt - this.turnStartedAt) : null,
+        durationMs: dur > 0 ? dur : null,
+        tokensPerSec: dur > 0 && this.turnTokens.output > 0
+          ? Math.round((this.turnTokens.output / (dur / 1000)) * 10) / 10 : null,
+        cacheHitRate: inTok > 0
+          ? Math.round((this.turnTokens.cacheRead / inTok) * 1000) / 1000 : null,
+      };
       return;
     }
     if (ev.type === 'assistant/message') {
@@ -155,7 +206,15 @@ class Tracker {
       return;
     }
     const u = ev.data?.chunk?.usage;
-    if (!u) return;
+    if (!u) {
+      this.onErrorEvent(ev);
+      return;
+    }
+    // ── turn stats: first chunk latency + token accumulation ──
+    if (!this.turnFirstChunkAt) this.turnFirstChunkAt = Date.now();
+    this.turnTokens.input += u.inputTokens || 0;
+    this.turnTokens.cacheRead += u.cacheReadTokens || 0;
+    this.turnTokens.output += u.outputTokens || 0;
     const model = r.currentModel || 'unknown';
     const norm = {
       input: u.inputTokens || 0,
@@ -166,6 +225,21 @@ class Tracker {
     addUsage((r.byModel[model] = r.byModel[model] || emptyUsage()), norm);
     addUsage((r.userMsgByModel[model] = r.userMsgByModel[model] || emptyUsage()), norm);
     addUsage((this.totalByModel[model] = this.totalByModel[model] || emptyUsage()), norm);
+  }
+
+  // ── error surfacing ─────────────────────────────────────────────────────
+  // ADAPTER: event type names are guesses until dsh documents its plugin API.
+  onErrorEvent(ev) {
+    const t = ev.type || '';
+    if (ERROR_REQUEST_TYPES.has(t)) {
+      const summary = ev.data?.error?.message || ev.data?.message || ev.data?.error
+        || ev.data?.reason || t;
+      this.lastError = {
+        summary: String(summary).slice(0, 160),
+        since: Date.now(),
+        sessionId: this.currentSessionId,
+      };
+    }
   }
 
   // ── approval / permission waiting ──────────────────────────────────────
@@ -188,8 +262,14 @@ class Tracker {
       return;
     }
     // Anything that implies the user answered (or the turn moved on) clears
-    // the pending state — a stale popup is worse than a missing one.
+    // the pending state — a stale popup is worse than a missing one. The
+    // hanging answerer promise must be settled too (the user answered in the
+    // web UI: treat as allowed so the tool call is not stuck forever — dsh
+    // will emit the authoritative decision event itself if it disagrees).
     if (APPROVAL_CLEAR_TYPES.has(t) || t === 'turn/end' || t === 'user/message') {
+      if (this.pendingApproval) {
+        settleApprovalResolver('allowed-once');
+      }
       this.pendingApproval = null;
     }
   }
@@ -200,8 +280,11 @@ class Tracker {
       plugin: 'dsh-plugin-desktop',
       since: this.startedAt,
       currentSessionId: this.currentSessionId,
+      workspace: this.currentSessionId ? (sessionCwds.get(this.currentSessionId) || '') : '',
       turn: this.turn,
       pendingApproval: this.pendingApproval,
+      lastError: this.lastError,
+      lastTurn: this.lastTurn,
       lastTurnEndSeq: this.currentSessionId
         ? (this.record(this.currentSessionId).lastTurnEndSeq || 0)
         : 0,
@@ -234,17 +317,26 @@ const EVENT_BUS_SHAPES = [
   // Real dsh emits session-scoped events: ctx.on('session/event', (session, event)).
   // Enrich each event with the session id so association does not depend on the
   // payload carrying it; also observe session/created so a fresh session becomes
-  // the current one immediately.
+  // the current one immediately. The session object itself carries the cwd —
+  // remember it so /api/state can expose the current workspace for the
+  // in-page files panel.
   (ctx, handler) => {
     if (typeof ctx.on !== 'function') return false;
     const offs = [];
+    const rememberWorkspace = (session) => {
+      const sid = session?.id || session?.header?.id;
+      const cwd = session?.cwd || session?.header?.cwd || session?.header?.session?.cwd;
+      if (sid && cwd) sessionCwds.set(sid, cwd);
+    };
     const offEvent = ctx.on('session/event', (session, event) => {
       const sid = session?.id || session?.header?.id;
+      rememberWorkspace(session);
       handler({ ...event, sessionId: sid });
     });
     offs.push(typeof offEvent === 'function' ? offEvent : () => {});
     const offCreated = ctx.on('session/created', (session) => {
       const sid = session?.id || session?.header?.id;
+      rememberWorkspace(session);
       handler({ type: 'session/created', data: { sessionId: sid } });
     });
     offs.push(typeof offCreated === 'function' ? offCreated : () => {});
@@ -398,9 +490,7 @@ async function tryApprove(ctx, id, decision) {
   // Real dsh: this plugin registers an `approval/request` answerer ahead of the
   // web transport, so the desktop can resolve the pending request directly.
   if (typeof pendingApprovalResolver === 'function') {
-    const resolve = pendingApprovalResolver;
-    pendingApprovalResolver = null;
-    resolve(decision === 'reject' ? 'rejected' : 'allowed-once');
+    settleApprovalResolver(decision === 'reject' ? 'rejected' : 'allowed-once');
     return { sent: true, result: { id, decision } };
   }
   for (const shape of APPROVE_SHAPES) {
@@ -410,6 +500,88 @@ async function tryApprove(ctx, id, decision) {
     } catch { /* try next shape */ }
   }
   return { sent: false };
+}
+
+// ── terminal bridge ──────────────────────────────────────────────────────
+// Mounts /api/shell (WebSocket upgrade) and bridges each connection to one
+// interactive PTY via ctx.subprocess.spawnTerminal. Protocol (JSON frames):
+//   client → host : {type:'start', shell?, rows?, cols?} | {type:'data', data}
+//                   | {type:'resize', rows, cols}
+//   host → client : {type:'data', data} | {type:'exit', code} | {type:'error', message}
+const TERMINAL_UPGRADE_SHAPES = [
+  (ctx, handler) => (ctx.webServer?.registerUpgrade
+    ? ctx.webServer.registerUpgrade({ path: '/api/shell', handler }) : false),
+  (ctx, handler) => (ctx.server?.registerUpgrade
+    ? ctx.server.registerUpgrade({ path: '/api/shell', handler }) : false),
+];
+
+function tryAttachTerminal(ctx) {
+  let WebSocketServer;
+  try { WebSocketServer = require('ws').WebSocketServer; } catch { return null; } // ws not bundled
+  const wss = new WebSocketServer({ noServer: true });
+  const sessions = new Set();
+
+  async function bridge(ws, req) {
+    let handle = null;
+    let alive = true;
+    const send = (obj) => { try { if (ws.readyState === 1) ws.send(JSON.stringify(obj)); } catch { /* gone */ } };
+    ws.on('message', async (raw) => {
+      let msg;
+      try { msg = JSON.parse(String(raw)); } catch { return; }
+      try {
+        if (msg.type === 'start' && !handle) {
+          // spawnTerminalCompat probes both known spec shapes
+          // (0.1.0-rc.* name form / 0.1.2-alpha argv form) and returns a
+          // unified handle { write, onData, onExit, resize, kill }.
+          handle = await spawnTerminalCompat(ctx, {
+            shell: msg.shell,
+            rows: Number(msg.rows),
+            cols: Number(msg.cols),
+            cwd: tracker.workspaceOf(tracker.currentSessionId) || undefined,
+          });
+          if (!handle) { send({ type: 'error', message: 'spawnTerminal not available in this dsh build' }); return; }
+          sessions.add(ws);
+          handle.onData((data) => send({ type: 'data', data }));
+          handle.onExit(({ exitCode } = {}) => { send({ type: 'exit', code: exitCode }); alive = false; });
+        } else if (msg.type === 'data' && handle) {
+          if (typeof handle.write === 'function') handle.write(msg.data);
+          else if (typeof handle.input === 'function') handle.input(msg.data);
+        } else if (msg.type === 'resize' && handle) {
+          try { handle.resize(Number(msg.cols) || 0, Number(msg.rows) || 0); } catch { /* alpha.1: ignored */ }
+        }
+      } catch (e) {
+        send({ type: 'error', message: String(e && e.message || e) });
+      }
+    });
+    ws.on('close', () => {
+      sessions.delete(ws);
+      if (handle && alive) { try { handle.kill?.(); handle.dispose?.(); } catch { /* already gone */ } }
+    });
+  }
+
+  let attached = false;
+  for (const shape of TERMINAL_UPGRADE_SHAPES) {
+    try {
+      const off = shape(ctx, (req, socket, head) => {
+        wss.handleUpgrade(req, socket, head, (ws) => { wss.emit('connection', ws, req); });
+      });
+      if (off === false || off === undefined) continue;
+      attached = true;
+      break;
+    } catch { /* try next shape */ }
+  }
+  if (!attached) return null;
+
+  wss.on('connection', (ws, req) => bridge(ws, req));
+  return {
+    attached: true,
+    dispose() {
+      disposed = true;
+      for (const ws of sessions) { try { ws.close(); } catch { /* gone */ } }
+      sessions.clear();
+      try { wss.close(); } catch { /* ignore */ }
+    },
+  };
 }
 
 // ── entry point ──────────────────────────────────────────────────────────
@@ -434,6 +606,10 @@ module.exports = function apply(ctx) {
         since: Date.now(),
         sessionId,
       };
+      // A second request while one is pending: settle the old promise
+      // (dsh only has one in-flight approval per transport; leaving it
+      // hanging would deadlock the first tool call).
+      settleApprovalResolver('allowed-once');
       return new Promise((resolve) => {
         pendingApprovalResolver = resolve;
       });
@@ -524,11 +700,21 @@ module.exports = function apply(ctx) {
     },
   ]);
 
+  // ── terminal bridge: /api/shell WebSocket ↔ ctx.subprocess PTY ──────────
+  // Same shape as dsh-web-shell (MIT): xterm.js in the desktop panel talks
+  // WebSocket; each socket is bridged to one interactive PTY. Requires the
+  // `ws` package (npm-installed plugins get it automatically; the desktop's
+  // copy-install brings it along too). Degrades silently when absent.
+  const terminal = tryAttachTerminal(ctx);
+
   // Diagnostics on the state endpoint so the desktop (and humans) can see
   // which adapters actually worked — essential while the plugin API is still
   // an assumption.
-  const report = () => ({ events, routes });
-  ctx.on?.('dispose', () => { tracker.sessions.clear(); });
+  const report = () => ({ events, routes, terminal });
+  ctx.on?.('dispose', () => {
+    tracker.sessions.clear();
+    if (terminal && typeof terminal.dispose === 'function') terminal.dispose();
+  });
   return { tracker, report };
 };
 

@@ -26,13 +26,16 @@
 <div id="bar">
   <button class="tab active" id="tab-sessions">会话</button>
   <button class="tab" id="tab-search">全文搜索</button>
+  <button class="tab" id="tab-templates">模板</button>
   <input id="q" placeholder="" spellcheck="false" autofocus>
 </div>
 <div id="list"></div>
 <script>
   const DICT = {
-    zh: { sessions: '会话', search: '全文搜索', phS: '模糊搜索会话…', phF: '搜索全部会话内容…', empty: '（无结果）', searching: '搜索中…', dot: '●', cur: '当前' },
-    en: { sessions: 'Sessions', search: 'Search', phS: 'fuzzy-search sessions…', phF: 'search all session transcripts…', empty: '(no results)', searching: 'searching…', dot: '●', cur: 'current' },
+    zh: { sessions: '会话', search: '全文搜索', templates: '模板', phS: '模糊搜索会话…', phF: '搜索全部会话内容…', phT: '过滤模板…（Enter 插入）',
+      empty: '（无结果）', searching: '搜索中…', dot: '●', cur: '当前', exportHint: 'Ctrl+E 导出所选会话', tplAdd: '保存当前输入为模板（Ctrl+S）', tplSaved: '模板已保存', tplName: '模板名称：' },
+    en: { sessions: 'Sessions', search: 'Search', templates: 'Templates', phS: 'fuzzy-search sessions…', phF: 'search all session transcripts…', phT: 'filter templates… (Enter inserts)',
+      empty: '(no results)', searching: 'searching…', dot: '●', cur: 'current', exportHint: 'Ctrl+E exports the selected session', tplAdd: 'Save input as template (Ctrl+S)', tplSaved: 'Template saved', tplName: 'Template name:' },
   };
   let lang = 'zh';
   const d = () => DICT[lang] || DICT.zh;
@@ -41,6 +44,7 @@
   let mode = 'sessions';
   let items = [];       // sessions mode rows
   let results = [];     // search mode rows
+  let templates = [];   // templates mode rows
   let sel = 0;
   let searchSeq = 0;
   let debounce = null;
@@ -127,33 +131,95 @@
     renderSearch();
   }
 
+  // ---- templates mode ----
+  function renderTemplates() {
+    const query = els.q.value.trim().toLowerCase();
+    const rows = query ? templates.filter((t) => t.name.toLowerCase().includes(query)) : templates;
+    if (sel >= rows.length) sel = Math.max(0, rows.length - 1);
+    els.list.textContent = '';
+    if (!rows.length) { els.list.innerHTML = `<div class="empty">${d().empty}</div>`; return; }
+    rows.forEach((t, i) => {
+      const div = document.createElement('div');
+      div.className = 'item' + (i === sel ? ' sel' : '');
+      const name = document.createElement('span');
+      name.className = 't';
+      name.textContent = t.name;
+      div.appendChild(name);
+      const sub = document.createElement('span');
+      sub.className = 'sub';
+      sub.textContent = t.content.split('\n')[0].slice(0, 60);
+      div.appendChild(sub);
+      div.addEventListener('click', () => insertTemplate(t));
+      els.list.appendChild(div);
+    });
+  }
+  async function insertTemplate(t) {
+    await window.desktop.insertComposer(t.content);
+    window.desktop.paletteOpen(''); // close
+  }
+  async function refreshTemplates() {
+    templates = (await window.desktop.templatesList()) || [];
+    renderTemplates();
+  }
+
   function setMode(m) {
     mode = m;
     document.getElementById('tab-sessions').className = 'tab' + (m === 'sessions' ? ' active' : '');
     document.getElementById('tab-search').className = 'tab' + (m === 'search' ? ' active' : '');
-    els.q.placeholder = m === 'sessions' ? d().phS : d().phF;
+    document.getElementById('tab-templates').className = 'tab' + (m === 'templates' ? ' active' : '');
+    els.q.placeholder = m === 'sessions' ? d().phS : m === 'search' ? d().phF : d().phT;
     els.q.value = '';
     sel = 0;
     if (m === 'sessions') renderSessions();
+    else if (m === 'templates') refreshTemplates();
     else { results = []; renderSearch(); }
     els.q.focus();
   }
 
   document.getElementById('tab-sessions').addEventListener('click', () => setMode('sessions'));
   document.getElementById('tab-search').addEventListener('click', () => setMode('search'));
+  document.getElementById('tab-templates').addEventListener('click', () => setMode('templates'));
 
   els.q.addEventListener('input', () => {
     if (mode === 'sessions') { sel = 0; renderSessions(); return; }
     clearTimeout(debounce);
     debounce = setTimeout(runSearch, 300);
   });
-  els.q.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') { window.desktop.paletteOpen(''); } // empty id: just hides the palette
-    else if (e.key === 'Enter') {
+  els.q.addEventListener('input', () => {
+    if (mode === 'sessions') { sel = 0; renderSessions(); return; }
+    if (mode === 'templates') { sel = 0; renderTemplates(); return; }
+    clearTimeout(debounce);
+    debounce = setTimeout(runSearch, 300);
+  });
+  els.q.addEventListener('keydown', async (e) => {
+    if (e.key === 'Escape') { window.desktop.paletteOpen(''); return; } // empty id: just hides the palette
+    if (e.ctrlKey && (e.key === 'e' || e.key === 'E') && mode === 'sessions') {
+      // export the selected session as Markdown
+      const query = els.q.value.trim();
+      const rows = query ? items.filter((s) => fuzzy(query, s.title || s.id)) : items;
+      if (rows[sel]) await window.desktop.exportSession(rows[sel].id);
+      return;
+    }
+    if (e.ctrlKey && (e.key === 's' || e.key === 'S') && mode === 'templates') {
+      // save the typed input as a new template
+      const content = els.q.value.trim();
+      if (!content) return;
+      const name = prompt(d().tplName, content.slice(0, 24));
+      if (name === null) return;
+      await window.desktop.templatesSave({ name: name.trim() || content.slice(0, 24), content });
+      els.q.value = '';
+      await refreshTemplates();
+      return;
+    }
+    if (e.key === 'Enter') {
       if (mode === 'sessions') {
         const query = els.q.value.trim();
         const rows = query ? items.filter((s) => fuzzy(query, s.title || s.id)) : items;
         if (rows[sel]) window.desktop.paletteOpen(rows[sel].id);
+      } else if (mode === 'templates') {
+        const query = els.q.value.trim().toLowerCase();
+        const rows = query ? templates.filter((t) => t.name.toLowerCase().includes(query)) : templates;
+        if (rows[sel]) insertTemplate(rows[sel]);
       } else if (results[sel]) {
         window.desktop.paletteOpen(results[sel].sessionId);
       }
@@ -161,6 +227,7 @@
       e.preventDefault();
       sel = Math.max(0, sel + (e.key === 'ArrowDown' ? 1 : -1));
       if (mode === 'sessions') renderSessions();
+      else if (mode === 'templates') renderTemplates();
       else renderSearch();
     }
   });
@@ -170,7 +237,7 @@
     renderSessions();
   }
 
-  window.desktop.onPaletteMode((m) => { setMode(m === 'search' ? 'search' : 'sessions'); refreshSessions(); });
+  window.desktop.onPaletteMode((m) => { setMode(m === 'search' ? 'search' : m === 'templates' ? 'templates' : 'sessions'); refreshSessions(); });
   (async () => {
     const s = await window.desktop.getState();
     lang = (s && s.language) || 'zh';

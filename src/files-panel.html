@@ -204,6 +204,7 @@
   <div class="tab active" id="tab-overview" data-i18n="tabOverview">概览</div>
   <div class="tab" id="tab-files" data-i18n="tabFiles">文件</div>
   <div class="tab" id="tab-git" data-i18n="tabGit">改动</div>
+  <div class="tab" id="tab-term" data-i18n="tabTerm">终端</div>
 </div>
 
 <div class="page active" id="page-overview">
@@ -222,6 +223,9 @@
       </div>
       <div class="row-line" style="margin-top:6px;"><span class="k" data-i18n="hitRate">平均命中</span><span class="v" id="ov-hit">—</span></div>
       <div class="bar green"><i id="ov-hitbar" style="width:0%"></i></div>
+      <div class="row-line" style="margin-top:6px;"><span class="k" data-i18n="ttft">首字 TTFT</span><span class="v" id="ov-ttft">—</span></div>
+      <div class="row-line"><span class="k" data-i18n="speed">输出速度</span><span class="v" id="ov-speed">—</span></div>
+      <div class="row-line"><span class="k" data-i18n="turnDur">上轮耗时</span><span class="v" id="ov-dur">—</span></div>
     </div>
 
     <div class="card">
@@ -255,6 +259,11 @@
   <pre id="diff"></pre>
 </div>
 
+<div class="page" id="page-term">
+  <div id="term-host" style="flex:1; overflow:hidden;"></div>
+  <div id="term-status" class="trunc" style="padding:2px 10px 6px;"></div>
+</div>
+
 <div id="preview" hidden>
   <div class="pv-head"><span class="t" id="pv-title"></span>
     <button id="pv-insert" data-i18n="pvInsert">引用此文件</button>
@@ -262,12 +271,18 @@
   </div>
   <pre id="pv-body"></pre>
 </div>
+<!-- xterm is a plain-JS dependency; resolved relative to this file both in
+     dev (node_modules on disk) and packaged (inside the asar). -->
+<script src="../node_modules/@xterm/xterm/lib/xterm.js"></script>
+<script src="../node_modules/@xterm/addon-fit/lib/addon-fit.js"></script>
 <script>
   const DICT = {
     zh: {
       brand: '工作区', tabOverview: '概览', tabFiles: '文件', tabGit: '改动', refresh: '刷新',
       sessionMetrics: '会话指标', sessionCost: '会话费用', turnCost: '本轮费用',
       hitRate: '平均命中', tokensTitle: '当前 tokens', in: 'in', cache: 'cache', out: 'out',
+      ttft: '首字 TTFT', speed: '输出速度', turnDur: '上轮耗时', tabTerm: '终端',
+      termStarting: '正在连接终端…', termNoPlugin: '终端需要伴生插件 v0.4+（托盘可安装）', termClosed: '终端已断开', termWait: '等待 shell…', termReconnect: '点击此处重连',
       balanceTitle: '余额', official: 'DeepSeek 官方', estimated: '估算',
       filePh: '筛选文件…', noResults: '（无结果）', searching: '搜索中…', searchPh: '搜索工作区文件内容…',
       gitNone: '（非 git 工作区）', gitClean: '（无变更）',
@@ -280,6 +295,8 @@
       brand: 'Workspace', tabOverview: 'Overview', tabFiles: 'Files', tabGit: 'Changes', refresh: 'Refresh',
       sessionMetrics: 'Session metrics', sessionCost: 'Session cost', turnCost: 'Last turn cost',
       hitRate: 'Avg hit rate', tokensTitle: 'Current tokens', in: 'in', cache: 'cache', out: 'out',
+      ttft: 'TTFT', speed: 'Speed', turnDur: 'Last turn', tabTerm: 'Terminal',
+      termStarting: 'connecting terminal…', termNoPlugin: 'Terminal needs companion plugin v0.4+ (install from tray)', termClosed: 'terminal closed', termWait: 'waiting for shell…', termReconnect: 'click to reconnect',
       balanceTitle: 'Balance', official: 'DeepSeek official', estimated: 'estimated',
       filePh: 'Filter files…', noResults: '(no results)', searching: 'searching…', searchPh: 'search workspace file contents…',
       gitNone: '(not a git workspace)', gitClean: '(clean)',
@@ -300,6 +317,8 @@
     ovCost: document.getElementById('ov-cost'), ovTurn: document.getElementById('ov-turn'), ovHit: document.getElementById('ov-hit'), ovHitbar: document.getElementById('ov-hitbar'),
     ovIn: document.getElementById('ov-in'), ovCache: document.getElementById('ov-cache'), ovOut: document.getElementById('ov-out'),
     ovOfficial: document.getElementById('ov-official'), ovEstimated: document.getElementById('ov-estimated'),
+    ovTtft: document.getElementById('ov-ttft'), ovSpeed: document.getElementById('ov-speed'), ovDur: document.getElementById('ov-dur'),
+    termHost: document.getElementById('term-host'), termStatus: document.getElementById('term-status'),
   };
   let wsState = { list: [], currentPath: '', currentSessionId: null };
   let selectedRoot = '';   // '' = follow current session cwd
@@ -447,6 +466,14 @@
     els.ovCache.textContent = fmtNum(t.cacheReadTokens);
     els.ovOut.textContent = fmtNum(t.outputTokens);
 
+    // per-turn stats (companion plugin v0.4+, self-computed from the stream)
+    const lt = s.lastTurnStats;
+    if (lt && lt.ttftMs != null) els.ovTtft.textContent = lt.ttftMs >= 1000 ? (lt.ttftMs / 1000).toFixed(1) + ' s' : lt.ttftMs + ' ms';
+    else els.ovTtft.textContent = '—';
+    els.ovSpeed.textContent = lt && lt.tokensPerSec != null ? lt.tokensPerSec + ' tok/s' : '—';
+    els.ovDur.textContent = lt && lt.durationMs != null ? (lt.durationMs / 1000).toFixed(1) + ' s' : '—';
+    window.__dshPort = s.port; // terminal tab connects here
+
     // hit rate + balance come from the full balance state
     try {
       const b = await window.desktop.getBalance();
@@ -480,16 +507,76 @@
 
   // ---- tabs ----
   function setTab(name) {
-    for (const t of ['overview', 'files', 'git']) {
+    for (const t of ['overview', 'files', 'git', 'term']) {
       document.getElementById('tab-' + t).classList.toggle('active', t === name);
       document.getElementById('page-' + t).classList.toggle('active', t === name);
     }
     if (name === 'git') refreshGit();
     if (name === 'files') els.searchQ.focus();
+    if (name === 'term') ensureTerminal();
   }
   document.getElementById('tab-overview').addEventListener('click', () => setTab('overview'));
   document.getElementById('tab-files').addEventListener('click', () => setTab('files'));
   document.getElementById('tab-git').addEventListener('click', () => setTab('git'));
+  document.getElementById('tab-term').addEventListener('click', () => setTab('term'));
+
+  // ---- terminal tab (companion plugin /api/shell PTY bridge) ----
+  let term = null; // { term, ws, fit, dead }
+  function ensureTerminal() {
+    // Reconnect after a dead session instead of early-returning.
+    if (term && term.ws && term.ws.readyState <= 1) { // connecting | open
+      setTimeout(() => term && term.fit && term.fit.fit(), 50);
+      return;
+    }
+    if (term) { // dead socket — tear down and start over
+      try { term.ws && term.ws.close(); } catch { /* already gone */ }
+      try { term.term.dispose(); } catch { /* ignore */ }
+      els.termHost.textContent = '';
+      term = null;
+    }
+    if (!window.Terminal) { // xterm not loaded (dependency missing in this install)
+      els.termStatus.textContent = d().termNoPlugin;
+      return;
+    }
+    els.termStatus.textContent = d().termStarting;
+    const t = new window.Terminal({
+      fontFamily: 'ui-monospace, Consolas, monospace', fontSize: 12,
+      theme: { background: 'rgba(0,0,0,0)' }, allowProposedApi: true,
+    });
+    const fit = new window.FitAddon.FitAddon();
+    t.loadAddon(fit);
+    t.open(els.termHost);
+    try { fit.fit(); } catch { /* zero-size edge */ }
+    term = { term: t, ws: null, fit, dead: false };
+
+    const connect = () => {
+      const port = window.__dshPort || 3080;
+      let ws;
+      try { ws = new WebSocket(`ws://127.0.0.1:${port}/api/shell`); }
+      catch (e) { els.termStatus.textContent = d().termNoPlugin; return; }
+      term.ws = ws;
+      ws.onopen = () => {
+        ws.send(JSON.stringify({ type: 'start', shell: 'bash', rows: t.rows, cols: t.cols }));
+        t.focus();
+      };
+      ws.onmessage = (ev) => {
+        let msg; try { msg = JSON.parse(ev.data); } catch { return; }
+        if (msg.type === 'data') t.write(msg.data);
+        else if (msg.type === 'exit') els.termStatus.textContent = d().termClosed + ` (${msg.code ?? 0})`;
+        else if (msg.type === 'error') els.termStatus.textContent = msg.message || d().termNoPlugin;
+      };
+      ws.onclose = () => { if (term && term.ws === ws) { term.dead = true; els.termStatus.textContent = d().termClosed + ' — ' + d().termReconnect; } };
+      ws.onerror = () => { els.termStatus.textContent = d().termNoPlugin; };
+    };
+    // wait one stats tick so __dshPort is fresh
+    if (window.__dshPort) connect(); else refreshStats().then(connect);
+
+    t.onData((data) => { if (term && term.ws && term.ws.readyState === 1) term.ws.send(JSON.stringify({ type: 'data', data })); });
+    t.onResize(({ cols, rows }) => { if (term && term.ws && term.ws.readyState === 1) term.ws.send(JSON.stringify({ type: 'resize', cols, rows })); });
+  }
+  // Click the status line to reconnect a dead terminal.
+  els.termStatus.style.cursor = 'pointer';
+  els.termStatus.addEventListener('click', () => { if (term && term.dead) setTab('term'); });
 
   // ---- file filter: empty → tree, text → workspace content search ----
   let searchTimer = null;

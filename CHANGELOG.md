@@ -3,6 +3,15 @@
 本项目的版本更新说明。发布 GitHub Release 时同步引用本文件对应条目。
 
 
+## Unreleased
+
+- **新增：轮次统计（伴生插件 v0.4）**——插件自事件流计算每轮 TTFT（首字延迟）、输出速度（tok/s）、轮耗时、缓存命中率，`/api/state` 暴露 `lastTurn`；文件面板「概览」卡新增三行实时展示
+- **新增：会话导出 Markdown**——本地会话文件直出（页面无下载环节）：页内右键菜单「导出为 Markdown」/ 调色板会话模式 `Ctrl+E`，生成到系统下载目录并在文件管理器中定位；导出器为纯函数（`src/session-export.js`，含单测）
+- **新增：停靠终端（伴生插件 v0.4 /api/shell）**——插件经 dsh 官方 `ctx.subprocess.spawnTerminal` 接缝桥接 PTY（`webServer.registerUpgrade` WebSocket 路由，同 dsh-web-shell 方案，无需 node-pty 原生模块）；文件面板新增「终端」tab（xterm.js，懒连接、面板关闭即断开）；插件一键安装会带上 `ws` 依赖，缺失时优雅降级
+- **新增：Prompt 模板库**——`Ctrl+Shift+T` 调色板模板模式：本地 JSON 持久化（userData/prompt-templates.json，≤200 条），过滤/Enter 或点击经输入框通道插入；`Ctrl+S` 把当前输入保存为模板
+- **新增：错误系统通知**——伴生插件识别错误类事件（`turn/error`/`session/error` 等 ADAPTER 列表），`/api/state.lastError` 暴露；桌面端弹系统通知（点击聚焦主窗口），`notifyOnError` 配置可关，新一轮 user/message 自动清除
+- **修复：伴生插件一键安装的文件清单**——补齐 lib/ 下 client 资源（client-menu/files-panel-client/ws-tree）与 cordis.patch.yml
+
 ## 0.1.37 (2026-08-18)
 
 - **修复（真实 dsh 适配，伴生插件）**：Linux 真机验证中发现并修复 dsh 插件 API 假设——安装 patch 由 `include:` 改为 `insert:` 并注入 `webServer`/`apiProxy`；事件总线改用 `session/event` + `session/created`；HTTP 路由改用 `webServer.register`；`/api/prompt` 改走 `apiProxy.sessions.prompt`；`/api/approve` 通过 `approval/request` answerer 直接审批。移除不兼容的 `ctx.desktopPlugin` 赋值。

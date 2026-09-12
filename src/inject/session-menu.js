@@ -751,6 +751,7 @@
       if (session) {
         split(root);
         add(root, isPinned(session.id) ? '取消置顶' : '置顶会话', function () { togglePin(session); });
+        add(root, '导出为 Markdown', function () { toMain('session:export', { id: session.id }); });
       }
 
       split(root);

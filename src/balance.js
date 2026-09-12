@@ -155,11 +155,25 @@ async function fetchPluginState(port) {
   const data = await res.json();
   if (data?.plugin !== 'dsh-plugin-desktop') throw new Error('not the desktop plugin');
   const ap = data.pendingApproval;
+  const lt = data.lastTurn;
+  const le = data.lastError;
   return {
     currentSessionId: data.currentSessionId || null,
+    workspace: typeof data.workspace === 'string' ? data.workspace : '',
     turn: data.turn === 'working' ? 'working' : 'idle',
     pendingApproval: ap && typeof ap === 'object'
       ? { id: String(ap.id || ''), summary: String(ap.summary || ''), since: ap.since || 0, sessionId: ap.sessionId || null }
+      : null,
+    lastTurn: lt && typeof lt === 'object'
+      ? {
+        ttftMs: Number.isFinite(lt.ttftMs) ? lt.ttftMs : null,
+        durationMs: Number.isFinite(lt.durationMs) ? lt.durationMs : null,
+        tokensPerSec: Number.isFinite(lt.tokensPerSec) ? lt.tokensPerSec : null,
+        cacheHitRate: Number.isFinite(lt.cacheHitRate) ? lt.cacheHitRate : null,
+      }
+      : null,
+    lastError: le && typeof le === 'object'
+      ? { summary: String(le.summary || ''), since: le.since || 0, sessionId: le.sessionId || null }
       : null,
     lastTurnEndSeq: data.lastTurnEndSeq || 0,
     lastSummary: data.lastSummary || '',

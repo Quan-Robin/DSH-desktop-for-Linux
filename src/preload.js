@@ -49,4 +49,9 @@ contextBridge.exposeInMainWorld('desktop', {
   wsGit: (root) => ipcRenderer.invoke('ws:git', { root }),
   // quick input history
   quickHistory: (arg) => ipcRenderer.invoke('quick:history', arg),
+  // session export + prompt templates
+  exportSession: (id) => ipcRenderer.invoke('session-export', id),
+  templatesList: () => ipcRenderer.invoke('templates:list'),
+  templatesSave: (tpl) => ipcRenderer.invoke('templates:save', tpl),
+  templatesDelete: (name) => ipcRenderer.invoke('templates:delete', name),
 });

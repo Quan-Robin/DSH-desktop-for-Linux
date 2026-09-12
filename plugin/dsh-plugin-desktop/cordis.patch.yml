@@ -3,4 +3,3 @@
       name: dsh-plugin-desktop
       inject:
         - webServer
-        - apiProxy

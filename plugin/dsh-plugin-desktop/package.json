@@ -1,7 +1,7 @@
 {
   "name": "dsh-plugin-desktop",
-  "version": "0.3.0",
-  "description": "Companion plugin for DSH-desktop: current-session / usage / prompt APIs, in-page context menu + pinned sessions, and the dockable right-side file panel (v0.3).",
+  "version": "0.4.1",
+  "description": "Companion plugin for DSH-desktop: current-session / usage / prompt / approval APIs, turn stats (TTFT/speed/cache), error surfacing, in-page context menu + pinned sessions, right-side file panel, and the /api/shell PTY terminal bridge.",
   "main": "lib/index.js",
   "exports": {
     ".": "./lib/index.js",
@@ -26,5 +26,11 @@
     "dsh-plugin",
     "desktop",
     "context-menu"
-  ]
+  ],
+  "dependencies": {
+    "ws": "^8.21.0"
+  },
+  "scripts": {
+    "test": "node test/run.mjs && node test/compat.test.mjs"
+  }
 }

@@ -28,6 +28,10 @@ function isolatePortableUserData() {
   } catch { return false; }
 }
 const path = require('node:path');
+// Portable isolation runs before ANY other local module require — the comment
+// on isolatePortableUserData promises "before loadConfig", and module-level
+// initializers below must not observe the default userData path.
+isolatePortableUserData();
 const { deepLinkFromArgv, clampWindowState, migrateProfiles, applyProfile, togglePin } = require('./desktop-utils');
 const wsTree = require('./ws-tree');
 
@@ -86,6 +90,8 @@ const I18N = {
     trayPins: '置顶的会话', noPins: '（暂无，右键会话可置顶）',
     filesPanel: '文件面板（Ctrl+Shift+E）', composerMiss: '未找到输入框——请先打开一个会话',
     approvalTitle: 'DSH 等待审批',
+    errorTitle: 'DSH 出错了',
+    exportDoneTitle: '会话已导出', exportDoneBody: '文件：{file}',
     profileSwitched: '已切换到配置「{name}」，正在重启服务…',
     pluginStatusOn: '已连接', pluginStatusOff: '未安装（功能受限）',
     loadingTitle: '正在启动 DeepSeek Harness…',
@@ -160,6 +166,8 @@ const I18N = {
     trayPins: 'Pinned sessions', noPins: '(none yet — right-click a session to pin)',
     filesPanel: 'Files panel (Ctrl+Shift+E)', composerMiss: 'Composer not found — open a session first',
     approvalTitle: 'DSH is waiting for approval',
+    errorTitle: 'DSH hit an error',
+    exportDoneTitle: 'Session exported', exportDoneBody: 'File: {file}',
     profileSwitched: 'Switched to profile "{name}" — restarting service…',
     pluginStatusOn: 'Connected', pluginStatusOff: 'Not installed (limited features)',
     loadingTitle: 'Starting DeepSeek Harness…',
@@ -235,6 +243,8 @@ const DEFAULTS = {
   pinnedSessions: [],
   // Right-dock files panel (workspace browser) restored on boot.
   filesPanelOpen: false,
+  // System notification when the companion plugin surfaces an error event.
+  notifyOnError: true,
 };
 
 let config = null;
@@ -1254,8 +1264,11 @@ function installDesktopPlugin() {
     fs.rmSync(dest, { recursive: true, force: true });
     // Copy the plugin out of the asar. Electron's fs is asar-aware for reads,
     // but cpSync of a directory tree out of an asar is unreliable — walk and
-    // copy file by file with readFileSync/writeFileSync instead.
-    const files = ['lib/index.js', 'package.json', 'README.md', 'test/run.mjs'];
+    // copy file by file with readFileSync/writeFileSync instead. lib/* is
+    // copied whole (index + client bundles + ws-tree), plus the `ws`
+    // dependency the /api/shell terminal bridge needs.
+    const files = ['lib/index.js', 'lib/compat.js', 'lib/ws-tree.js', 'lib/client-menu.js', 'lib/files-panel-client.js',
+      'package.json', 'README.md', 'cordis.patch.yml', 'test/run.mjs'];
     fs.mkdirSync(dest, { recursive: true });
     for (const rel of files) {
       const s = path.join(src, rel);
@@ -1266,6 +1279,7 @@ function installDesktopPlugin() {
         fs.writeFileSync(d, buf);
       } catch { /* missing optional file — skip */ }
     }
+    copyWsDependency(profileRoot);
     // Register in the loader patch — append `- include: dsh-plugin-desktop`
     // unless an entry is already there.
     const patch = path.join(profileRoot, 'cordis.patch.yml');
@@ -1281,6 +1295,29 @@ function installDesktopPlugin() {
     notify(t('pluginInstallFail', { err: e.message }));
     return false;
   }
+}
+
+// Copy the `ws` package (required by the plugin's /api/shell terminal bridge)
+// from the app bundle into the profile's node_modules. Best-effort: the
+// terminal tab degrades gracefully when it is missing.
+function copyWsDependency(profileRoot) {
+  const src = [__dirname, process.resourcesPath, path.join(__dirname, '..')]
+    .filter(Boolean)
+    .map((root) => path.join(root, 'node_modules', 'ws'))
+    .find((p) => fs.existsSync(path.join(p, 'package.json')));
+  if (!src) return;
+  const dest = path.join(profileRoot, 'node_modules', 'ws');
+  try {
+    fs.mkdirSync(dest, { recursive: true });
+    for (const rel of ['package.json', 'lib/websocket.js', 'lib/buffer-util.js', 'lib/constants.js',
+      'lib/event-target.js', 'lib/extension.js', 'lib/limiter.js', 'lib/permessage-deflate.js',
+      'lib/receiver.js', 'lib/sender.js', 'lib/stream.js', 'lib/subprotocol.js',
+      'lib/validation.js', 'lib/websocket-server.js', 'lib/websocket.js']) {
+      try {
+        fs.writeFileSync(path.join(dest, rel), fs.readFileSync(path.join(src, rel)));
+      } catch { /* optional file */ }
+    }
+  } catch { /* terminal will be unavailable */ }
 }
 
 function installPluginAndRestart() {
@@ -1338,6 +1375,18 @@ function registerPinIpc() {
     applyMenus(); // tray pinned list follows
   });
   ipcMain.handle('pins:get', () => config.pinnedSessions || []);
+  // In-page context menu → export the session transcript.
+  ipcMain.on('session:export', (_e, payload) => {
+    const id = payload && typeof payload.id === 'string' ? payload.id : null;
+    if (id) exportSessionMarkdown(id).then((r) => {
+      if (r.ok) {
+        notify(t('exportDoneTitle'), t('exportDoneBody', { file: r.file }));
+        try { shell.showItemInFolder(r.file); } catch { /* optional */ }
+      } else {
+        notify(t('errorTitle'), r.error || 'export failed');
+      }
+    }).catch(() => {});
+  });
 }
 
 // Jump to a pinned session from the tray: show the window, tell the page.
@@ -1430,6 +1479,9 @@ function registerFilesIpc() {
     sessionCost: balanceState.sessionCost,
     turnCost: balanceState.turnCost,
     currentId: balanceState.currentId,
+    lastTurnStats: balanceState.lastTurnStats || null,
+    port: config.port,
+    dshTurn: balanceState.dshTurn || null,
   }));
   ipcMain.handle('insert:composer', (_e, text) => {
     if (typeof text !== 'string' || !text) return false;
@@ -1442,7 +1494,11 @@ function registerFilesIpc() {
   ipcMain.handle('open:external-path', (_e, p) => {
     if (typeof p !== 'string' || !p || !fs.existsSync(p)) return false;
     // Only directories that were reported by the page's workspaces service,
-    // or anything beneath them, may be opened.
+    // or anything beneath them, may be opened — and ONLY as directories:
+    // shell.openPath on a file would execute whatever binary/script it is.
+    let st;
+    try { st = fs.statSync(p); } catch { return false; }
+    if (!st.isDirectory()) return false;
     const known = workspaceState.list.some((w) => p === w.path || p.startsWith(w.path + '/'))
       || p === workspaceState.currentPath || (workspaceState.currentPath && p.startsWith(workspaceState.currentPath + '/'));
     if (!known) return false;
@@ -1642,6 +1698,95 @@ function registerExtrasIpc() {
     }
     return list;
   });
+
+  // ── session transcript export (Markdown) ──
+  ipcMain.handle('session-export', async (_e, sessionId) => {
+    if (typeof sessionId !== 'string' || !sessionId) return { ok: false, error: 'no session' };
+    try {
+      const r = await exportSessionMarkdown(sessionId);
+      if (r.ok) {
+        notify(t('exportDoneTitle'), t('exportDoneBody', { file: r.file }));
+        try { shell.showItemInFolder(r.file); } catch { /* optional */ }
+      }
+      return r;
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
+  });
+
+  // ── prompt templates (local JSON store) ──
+  ipcMain.handle('templates:list', () => loadTemplates());
+  ipcMain.handle('templates:save', (_e, tpl) => {
+    const list = loadTemplates();
+    const name = tpl && typeof tpl.name === 'string' ? tpl.name.trim() : '';
+    const content = tpl && typeof tpl.content === 'string' ? tpl.content : '';
+    if (!name || !content.trim()) return { ok: false, error: 'name and content required' };
+    const existing = list.findIndex((x) => x.name === name);
+    const entry = { name, content };
+    if (existing >= 0) list[existing] = entry;
+    else list.unshift(entry);
+    saveTemplates(list.slice(0, 200));
+    return { ok: true };
+  });
+  ipcMain.handle('templates:delete', (_e, name) => {
+    saveTemplates(loadTemplates().filter((x) => x.name !== name));
+    return { ok: true };
+  });
+}
+
+// ── session transcript export ────────────────────────────────────────────
+
+const { eventsToMarkdown } = require('./session-export');
+
+async function exportSessionMarkdown(sessionId) {
+  const file = balanceApi.findSessionFile(sessionId);
+  if (!file) return { ok: false, error: 'session file not found' };
+  const { decompress } = require('fzstd');
+  const buf = fs.readFileSync(file);
+  const json = Buffer.from(decompress(new Uint8Array(buf))).toString('utf8');
+  const events = [];
+  for (const line of json.split('\n')) {
+    if (!line.includes('"type":')) continue;
+    try { events.push(JSON.parse(line)); } catch { /* skip */ }
+  }
+  const server = balanceState.sessions.find((s) => s.id === sessionId);
+  const md = eventsToMarkdown(events, {
+    sessionId,
+    title: (server && server.title) || null,
+    workspace: workspaceState.currentPath || '',
+    exportedAt: Date.now(),
+  });
+  const stamp = new Date().toISOString().slice(0, 10);
+  const safeId = sessionId.replace(/[^\w.-]/g, '_').slice(0, 60);
+  const dir = app.getPath('downloads');
+  const out = path.join(dir, `dsh-session-${safeId}-${stamp}.md`);
+  fs.writeFileSync(out, md);
+  return { ok: true, file: out };
+}
+
+// ── prompt templates ─────────────────────────────────────────────────────
+
+const TEMPLATES_FILE = () => path.join(app.getPath('userData'), 'prompt-templates.json');
+function loadTemplates() {
+  try { return JSON.parse(fs.readFileSync(TEMPLATES_FILE(), 'utf8')); } catch { return []; }
+}
+function saveTemplates(list) {
+  try {
+    fs.mkdirSync(path.dirname(TEMPLATES_FILE()), { recursive: true });
+    fs.writeFileSync(TEMPLATES_FILE(), JSON.stringify(list, null, 2));
+  } catch { /* non-fatal */ }
+}
+
+// ── error surfacing (plugin lastError → system notification) ─────────────
+let lastNotifiedErrorAt = 0;
+function checkPluginError(pluginState) {
+  const le = pluginState && pluginState.lastError;
+  if (!le || !le.since || le.since <= lastNotifiedErrorAt) return;
+  lastNotifiedErrorAt = le.since;
+  if (config.notifyOnError === false) return;
+  const n = new Notification({ title: t('errorTitle'), body: le.summary || t('turnDoneBody') });
+  n.on('click', () => { if (win && !win.isDestroyed()) { win.show(); win.focus(); } });
+  n.show();
 }
 
 let currentApproval = null;
@@ -1838,6 +1983,8 @@ async function doRefresh() {
   checkTurnEnd(sess);
   balanceState.hitRate = 0; // server path has no per-session hit rate; kept for compatibility
   if (plugin) balanceState.dshTurn = plugin.state.turn; // 'working' | 'idle' (plugin only)
+  balanceState.lastTurnStats = plugin ? plugin.state.lastTurn : null; // TTFT/speed/cache for the stats strip
+  checkPluginError(plugin && plugin.state);
   // Approval watch: surface new pending approvals, dismiss the popup when
   // the user answered in the web UI (plugin clears it on the next event).
   const ap = plugin ? plugin.state.pendingApproval : null;
@@ -2358,6 +2505,7 @@ function registerQuickInputShortcut() {
   try {
     globalShortcut.register('Control+Shift+P', () => openPalette('sessions'));
     globalShortcut.register('Control+Shift+F', () => openPalette('search'));
+    globalShortcut.register('Control+Shift+T', () => openPalette('templates'));
   } catch (e) {
     console.error('[palette] shortcut registration failed:', e.message);
   }
@@ -2499,10 +2647,6 @@ function registerSettingsIpc() {
 }
 
 // ---------- app lifecycle ----------
-
-// Isolate portable userData before the single-instance lock is taken (the
-// lock lives in userData — two portable copies must not collide on it).
-isolatePortableUserData();
 
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
