@@ -201,30 +201,34 @@ class Tracker {
       };
       return;
     }
+    // dsh 0.1.5-rc.1 把用量放在 data.usage（旧版 <=0.1.4 在 data.chunk.usage），
+    // 且真正带用量的事件是 `assistant/message` —— 因此必须在按类型提前 return 之前
+    // 就读用量，否则 byModel 恒空、面板费用/命中率全无数据（实测 1054 个用量事件全在此类）。
+    const u = ev.data?.usage || ev.data?.chunk?.usage;
+    if (u) {
+      if (!this.turnFirstChunkAt) this.turnFirstChunkAt = Date.now();
+      this.turnTokens.input += u.inputTokens || 0;
+      this.turnTokens.cacheRead += u.cacheReadTokens || 0;
+      this.turnTokens.output += u.outputTokens || 0;
+      const model = r.currentModel || 'unknown';
+      const norm = {
+        input: u.inputTokens || 0,
+        cacheRead: u.cacheReadTokens || 0,
+        output: u.outputTokens || 0,
+        reasoning: u.reasoningTokens || 0,
+      };
+      addUsage((r.byModel[model] = r.byModel[model] || emptyUsage()), norm);
+      addUsage((r.userMsgByModel[model] = r.userMsgByModel[model] || emptyUsage()), norm);
+      addUsage((this.totalByModel[model] = this.totalByModel[model] || emptyUsage()), norm);
+    }
     if (ev.type === 'assistant/message') {
       r.msgText = extractText(ev.data?.message?.content) || r.msgText;
       return;
     }
-    const u = ev.data?.chunk?.usage;
     if (!u) {
       this.onErrorEvent(ev);
       return;
     }
-    // ── turn stats: first chunk latency + token accumulation ──
-    if (!this.turnFirstChunkAt) this.turnFirstChunkAt = Date.now();
-    this.turnTokens.input += u.inputTokens || 0;
-    this.turnTokens.cacheRead += u.cacheReadTokens || 0;
-    this.turnTokens.output += u.outputTokens || 0;
-    const model = r.currentModel || 'unknown';
-    const norm = {
-      input: u.inputTokens || 0,
-      cacheRead: u.cacheReadTokens || 0,
-      output: u.outputTokens || 0,
-      reasoning: u.reasoningTokens || 0,
-    };
-    addUsage((r.byModel[model] = r.byModel[model] || emptyUsage()), norm);
-    addUsage((r.userMsgByModel[model] = r.userMsgByModel[model] || emptyUsage()), norm);
-    addUsage((this.totalByModel[model] = this.totalByModel[model] || emptyUsage()), norm);
   }
 
   // ── error surfacing ─────────────────────────────────────────────────────
