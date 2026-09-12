@@ -486,14 +486,14 @@ function startDsh() {
     // npm/pnpm itself.
     const b = bundledPaths();
     bin = b.node;
-    args = [b.dsh, 'web', '--port', String(config.port)];
+    args = [b.dsh, 'web', '--port', String(config.port), '--no-open'];
     const binDirs = [path.dirname(b.node), path.dirname(b.pnpm), process.env.PATH].filter(Boolean);
     env.PATH = binDirs.join(path.delimiter);
     ensureVettingPatched();
   } else {
     args = config.dshCommand === 'npx'
-      ? ['-y', DSH_PACKAGE, 'web', '--port', String(config.port)]
-      : ['web', '--port', String(config.port)];
+      ? ['-y', DSH_PACKAGE, 'web', '--port', String(config.port), '--no-open']
+      : ['web', '--port', String(config.port), '--no-open'];
     bin = config.dshCommand === 'npx' ? 'npx' : config.dshCommand === 'global' ? 'dsh' : config.dshCommand;
     // GUI launches get a bare PATH (~/.npm-global/bin etc. missing) — probe
     // the common user install locations before spawning, same as the version
