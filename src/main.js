@@ -2123,13 +2123,21 @@ async function doRefresh() {
       // subtract that turn a second time (the "estimate keeps subtracting after the
       // official balance settled" bug).
       const settled = (now - convOfficialStableAt) >= 60_000;
-      if (convDone && convFrozenEst != null && !settled) {
-        convBase = Math.min(convFrozenEst, official);
-      } else {
+      if (settled) {
+        // Official balance has been unchanged for 60s: it already reflects any
+        // charge that has been billed, so show it AS IS. Subtracting the current
+        // turn here is what produced "official settled but the estimate still
+        // subtracts this conversation".
         convBase = official;
+        convFrozenEst = null;
+        convDone = false;
+        balanceState.estimated = official;
+      } else {
+        if (convDone && convFrozenEst != null) convBase = Math.min(convFrozenEst, official);
+        else convBase = official;
+        convDone = false;
+        balanceState.estimated = convBase - turn;
       }
-      convDone = false;
-      balanceState.estimated = convBase - turn;
     } else if (now - convOfficialStableAt >= 60_000 && official !== convBase) {
       // Official balance has SETTLED (unchanged for 60s) and it differs from our
       // base: the server has already billed the finished conversation, so adopt

@@ -3,3 +3,8 @@
       name: dsh-plugin-desktop
       inject:
         - webServer
+        # The terminal bridge spawns a PTY via ctx.subprocess.spawnTerminal.
+        # Without this declaration dsh refuses the access at runtime with
+        # "cannot get property "subprocess" without inject" and the terminal
+        # never starts (the panel then looks like it "can't type").
+        - subprocess
