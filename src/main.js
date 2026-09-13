@@ -760,9 +760,13 @@ function createWindow() {
   //   1) 渲染进程崩溃或加载失败 → 自动重载；
   //   2) F5 / Ctrl+R → 手动刷新（与浏览器一致的习惯）；
   //   3) 加载成功后清掉看门狗计时器，避免误判。
-  const reloadMainView = (why) => {
+  const reloadMainView = async (why) => {
     try {
       if (!mainView || mainView.webContents.isDestroyed()) return;
+      // A config change can restart dsh with a NEW per-run token; reloading the
+      // old URL would just white-screen again. Re-scrape the token from the log
+      // first (cheap), then load — this mirrors what a browser refresh does.
+      try { captureWebToken(readDshLogTail()); } catch { /* keep old token */ }
       console.log('[mainView] reload:', why);
       mainView.webContents.loadURL(appUrl());
     } catch { /* ignore */ }
