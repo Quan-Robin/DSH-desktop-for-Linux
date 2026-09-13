@@ -27,7 +27,7 @@ const PATCHES = [
     //    —— 否则拖动基准是 56，需要拖 100+px 才越过阈值，表现为"拖不出来"；
     //  * 已展开时，往左拖到 160px 以下即折叠。
     replace: 'd.layoutInfo.sidebar = d.layoutInfo.sidebar === 0'
-      + ' ? (px > 64 ? clampWidth(px, 264, 420) : 0)'
+      + ' ? (px > 264 ? clampWidth(px, 264, 420) : 0)'
       + ' : (px < 160 ? 0 : clampWidth(px, 264, 420));',
   },
   {
@@ -37,6 +37,14 @@ const PATCHES = [
         + '折叠态也渲染在 56px 图标栏右缘，配合上一条的状态阈值即可拖出。',
     find: '!sidebarCollapsed && (0, react_jsx_runtime.jsx)(DragHandle, {',
     replace: '(0, react_jsx_runtime.jsx)(DragHandle, {',
+  },
+  {
+    id: 'sidebar-drag-base-when-collapsed',
+    note: '拖动基准取的是当前列宽（折叠后为 56px），导致折叠/展开两个阈值落在'
+        + '不同坐标系里，同一手势内来回翻转（用户看到的"闪屏"）。折叠时把基准'
+        + '设为 264，与 setSidebar 的 160/264 两个阈值构成迟滞带，边界不再抖动。',
+    find: 'sidebarBase.current = colsRef.current.sidebar;',
+    replace: 'sidebarBase.current = colsRef.current.sidebar <= 56 ? 264 : colsRef.current.sidebar;',
   },
 ];
 
