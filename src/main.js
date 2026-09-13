@@ -2161,12 +2161,17 @@ async function doRefresh() {
   // Approval watch: surface new pending approvals, dismiss the popup when
   // the user answered in the web UI (plugin clears it on the next event).
   const ap = plugin ? plugin.state.pendingApproval : null;
+  // pet 在线时由 pet 弹审批气泡，桌面版不再另弹一个（用户要求"只应有一个审批窗口"）。
+  const petOwnsApproval = !!(plugin && plugin.state.petPresent);
   if (ap && ap.id !== lastApprovalId) {
     lastApprovalId = ap.id;
-    showApproval(ap);
+    if (petOwnsApproval) hideApproval();
+    else showApproval(ap);
   } else if (!ap && lastApprovalId) {
     lastApprovalId = null;
     hideApproval();
+  } else if (petOwnsApproval) {
+    hideApproval();   // pet 中途启动：收起已弹出的原生窗
   }
   // Unread activity: a session finished a turn while NOT being viewed.
   for (const s of usage.sessions) {

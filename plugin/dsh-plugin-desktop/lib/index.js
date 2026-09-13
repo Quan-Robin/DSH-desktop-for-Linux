@@ -65,6 +65,12 @@ const SESSION_ID_PATHS = [
 
 // ── ADAPTER: approval event names (extend when adapting to a real dsh) ────
 let pendingApprovalResolver = null;
+// 谁在轮询 /api/state：pet 带 ?client=pet，桌面版带 ?client=desktop。
+// 用于避免"pet 与桌面版各弹一个审批窗口"——桌面版在 pet 在线时不再弹自己的窗。
+const clientSeen = new Map();          // client 名 → 最近一次轮询时间戳
+const CLIENT_TTL_MS = 15000;           // 超过该时长未轮询视为离线
+function markClient(name) { if (name) clientSeen.set(String(name), Date.now()); }
+function clientOnline(name) { return (Date.now() - (clientSeen.get(name) || 0)) < CLIENT_TTL_MS; }
 
 // session id → workspace cwd, learned from session objects on the event bus
 // (session/event + session/created). Read by /api/state's `workspace` field
@@ -285,6 +291,9 @@ class Tracker {
     return {
       plugin: 'dsh-plugin-desktop',
       since: this.startedAt,
+      // pet / 桌面版是否在轮询本服务（供桌面版决定要不要弹自己的审批窗）
+      petPresent: clientOnline('pet'),
+      desktopPresent: clientOnline('desktop'),
       currentSessionId: this.currentSessionId,
       workspace: this.currentSessionId ? (sessionCwds.get(this.currentSessionId) || '') : '',
       turn: this.turn,
@@ -631,7 +640,10 @@ module.exports = function apply(ctx) {
   }
 
   const routes = tryAttachRoutes(ctx, [
-    { method: 'get', path: '/api/state', fn: () => tracker.state() },
+    {
+      method: 'get', path: '/api/state',
+      fn: ({ query }) => { markClient(query && query.client); return tracker.state(); },
+    },
     { method: 'get', path: '/api/usage', fn: () => tracker.usage() },
     {
       method: 'post',

@@ -1,6 +1,6 @@
 {
   "name": "dsh-plugin-desktop",
-  "version": "0.4.3",
+  "version": "0.4.4",
   "description": "Companion plugin for DSH-desktop: current-session / usage / prompt / approval APIs, turn stats (TTFT/speed/cache), error surfacing, in-page context menu + pinned sessions, right-side file panel, and the /api/shell PTY terminal bridge.",
   "main": "lib/index.js",
   "exports": {

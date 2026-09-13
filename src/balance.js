@@ -169,7 +169,8 @@ async function fetchSessions(port) {
 // a fallback. Response shape: see plugin/dsh-plugin-desktop/lib/index.js.
 
 async function fetchPluginState(port) {
-  const res = await fetch(`http://127.0.0.1:${port}/api/state`, { signal: AbortSignal.timeout(1500) });
+  // client=desktop 让插件知道桌面版在线（pet 也各自上报，用于避免双审批窗）
+  const res = await fetch(`http://127.0.0.1:${port}/api/state?client=desktop`, { signal: AbortSignal.timeout(1500) });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   const data = await res.json();
   if (data?.plugin !== 'dsh-plugin-desktop') throw new Error('not the desktop plugin');
