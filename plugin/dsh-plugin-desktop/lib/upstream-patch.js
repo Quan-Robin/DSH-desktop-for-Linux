@@ -30,6 +30,14 @@ const PATCHES = [
       + ' ? (px > 64 ? clampWidth(px, 264, 420) : 0)'
       + ' : (px < 160 ? 0 : clampWidth(px, 264, 420));',
   },
+  {
+    id: 'sidebar-handle-when-collapsed',
+    note: '折叠后拖动把手被条件渲染屏蔽（!sidebarCollapsed && jsx(DragHandle…)），'
+        + '折叠态因此没有任何展开入口（既无按钮也无把手）。去掉该守卫，让把手在'
+        + '折叠态也渲染在 56px 图标栏右缘，配合上一条的状态阈值即可拖出。',
+    find: '!sidebarCollapsed && (0, react_jsx_runtime.jsx)(DragHandle, {',
+    replace: '(0, react_jsx_runtime.jsx)(DragHandle, {',
+  },
 ];
 
 function locateLayoutBundle() {
