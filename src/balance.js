@@ -29,22 +29,34 @@ function getDshHome() { return dshHome; }
 // peak hours are 09:00–12:00 and 14:00–18:00 Beijing time.
 const PEAK_START = new Date('2026-08-17T00:00:00+08:00').getTime();
 
+// DeepSeek official pricing, CNY per 1M tokens — user-supplied table matching
+// api-docs.deepseek.com (2026-09). The panel renders ¥ and the official balance
+// RPC reports CNY, so these stay in CNY (no conversion).
+// Peak = Beijing 08:00-12:00 & 14:00-18:00, Mon-Fri (weekends off-peak all day).
+// Model ids: `deepseek-flash` (= legacy alias `deepseek-v4-flash`) and
+// `deepseek-v4-pro`. `deepseek-flash` used to be MISSING from this table, so every
+// flash call fell back to a stale price — that is why the overview cost was wrong.
+// Any model can be overridden via config.pricing[model].
 const DEFAULT_PRICING = {
-  'deepseek-v4-flash': {
-    input: 1, cacheHit: 0.02, output: 2,
-    peak: { input: 3.0, cacheHit: 0.10, output: 9.0 },
-    offpeak: { input: 1.5, cacheHit: 0.05, output: 4.5 },
+  'deepseek-flash': {
+    input: 2, cacheHit: 0.04, output: 8,                    // peak
+    peak: { input: 2, cacheHit: 0.04, output: 8 },
+    offpeak: { input: 1, cacheHit: 0.02, output: 4 },
+  },
+  'deepseek-v4-flash': {   // legacy alias, same price as deepseek-flash
+    input: 2, cacheHit: 0.04, output: 8,
+    peak: { input: 2, cacheHit: 0.04, output: 8 },
+    offpeak: { input: 1, cacheHit: 0.02, output: 4 },
   },
   'deepseek-v4-pro': {
-    input: 3, cacheHit: 0.025, output: 6,
+    input: 9.0, cacheHit: 0.30, output: 27.0,               // peak
     peak: { input: 9.0, cacheHit: 0.30, output: 27.0 },
     offpeak: { input: 4.5, cacheHit: 0.15, output: 13.5 },
   },
+  // Retired ids kept so old sessions still price sensibly.
   'deepseek-chat': { input: 2, cacheHit: 0.5, output: 8 },
   'deepseek-reasoner': { input: 4, cacheHit: 1, output: 16 },
-};
-
-// Beijing hour (0-23) regardless of the machine's local timezone — peak
+};// Beijing hour (0-23) regardless of the machine's local timezone — peak
 // pricing is defined in Beijing time, so a UTC-8 user must not be classified
 // by their own wall clock.
 const beijingHourFmt = new Intl.DateTimeFormat('en-US', {
@@ -55,13 +67,20 @@ function beijingHour(now) {
   return h === 24 ? 0 : h; // some ICU versions render midnight as "24"
 }
 
+// Official definition: peak is UTC 00:00-04:00 and 06:00-10:00, Monday-Friday
+// (= Beijing 08-12 / 14-18, Mon-Fri). Weekends are off-peak all day.
 function isBeijingPeak(now) {
-  const h = beijingHour(now);
-  return (h >= 9 && h < 12) || (h >= 14 && h < 18);
+  // Beijing time is UTC+8. Peak is 08:00-12:00 & 14:00-18:00 Beijing, Mon-Fri;
+  // weekends are off-peak all day. Compute weekday from Beijing time, not local.
+  const bj = new Date(new Date(now).getTime() + 8 * 3600 * 1000);
+  const day = bj.getUTCDay();          // 0=Sun, 6=Sat (shifted clock, so read UTC parts)
+  if (day === 0 || day === 6) return false;
+  const h = bj.getUTCHours();
+  return (h >= 8 && h < 12) || (h >= 14 && h < 18);
 }
 
 function priceFor(model, pricing, now) {
-  const p = { ...(DEFAULT_PRICING[model] || DEFAULT_PRICING['deepseek-v4-flash']), ...(pricing && pricing[model]) };
+  const p = { ...(DEFAULT_PRICING[model] || DEFAULT_PRICING['deepseek-flash']), ...(pricing && pricing[model]) };
   if (p.peak && p.offpeak && now >= PEAK_START) {
     return isBeijingPeak(now) ? p.peak : p.offpeak;
   }
@@ -378,7 +397,7 @@ function costOfByModel(byModel, pricing, now = Date.now()) {
 // The server response carries no model, so the caller passes it (derived from
 // the local session parse); default to v4-flash (the current default model).
 function costOfTokens(tokens, pricing, model, now = Date.now()) {
-  const p = priceFor(model || 'deepseek-v4-flash', pricing, now);
+  const p = priceFor(model || 'deepseek-flash', pricing, now);
   return (
     (tokens.uncachedInputTokens || 0) * p.input +
     (tokens.cacheReadTokens || 0) * p.cacheHit +

@@ -1661,7 +1661,40 @@ function wsGit(root) {
   });
 }
 
+// Find a usable git repository for the changes tab. The active workspace is
+// often a plain folder (e.g. a handoff directory) while the actual projects live
+// in subdirectories, so probe the root, its immediate children, and a couple of
+// conventional project homes. Returns the first directory that git accepts.
+function detectGitRoot(root) {
+  return new Promise((resolve) => {
+    const probe = (dir) => new Promise((res) => {
+      if (!dir) return res(null);
+      execFile('git', ['-C', dir, 'rev-parse', '--show-toplevel'], { timeout: 4000 },
+        (err, stdout) => res(err ? null : String(stdout).trim() || null));
+    });
+    (async () => {
+      const direct = await probe(root);
+      if (direct) return resolve(direct);
+      const dirs = [];
+      try {
+        for (const e of fs.readdirSync(root, { withFileTypes: true })) {
+          if (!e.isDirectory() || e.name.startsWith('.')) continue;
+          dirs.push(path.join(root, e.name));
+        }
+      } catch { /* unreadable root */ }
+      dirs.push(path.join(os.homedir(), '.reasonix', 'global-workspace'));
+      dirs.push(path.join(os.homedir(), 'Project'));
+      for (const d of dirs.slice(0, 40)) {
+        const hit = await probe(d);
+        if (hit) return resolve(hit);
+      }
+      resolve(null);
+    })();
+  });
+}
+
 function registerExtrasIpc() {
+  ipcMain.handle('git:detect', (_e, root) => detectGitRoot(String(root || '')));
   ipcMain.handle('approval:decide', async (_e, decision) => {
     if (decision === 'view') {
       if (win && !win.isDestroyed()) { win.show(); win.focus(); }
@@ -2082,16 +2115,20 @@ async function doRefresh() {
       }
       convDone = false;
       balanceState.estimated = convBase - turn;
+    } else if (now - convOfficialStableAt >= 60_000 && official !== convBase) {
+      // Official balance has SETTLED (unchanged for 60s) and it differs from our
+      // base: the server has already billed the finished conversation, so adopt
+      // it wholesale. Before this fix the adoption only happened when convDone
+      // was true, so a session whose turn/end was missed kept subtracting the
+      // conversation cost from an already-settled official balance forever.
+      convBase = official;
+      convFrozenEst = null;
+      convDone = false;
+      balanceState.estimated = official;
     } else if (convDone) {
-      // A real turn/end event was seen (conversation finished): keep the
-      // frozen estimate until the official balance settles (60s without a
-      // change), then adopt it as the new base.
-      balanceState.estimated = convFrozenEst;
-      if (now - convOfficialStableAt >= 60_000) {
-        convBase = official;
-        convDone = false;
-        balanceState.estimated = official;
-      }
+      // Conversation finished but the official balance has not settled yet
+      // (~3 min billing lag): hold the frozen post-turn estimate.
+      balanceState.estimated = convFrozenEst != null ? convFrozenEst : official;
     } else if (convBase != null) {
       // Conversation still in progress, no new tokens this tick (e.g. a
       // subagent working silently): keep the running estimate.

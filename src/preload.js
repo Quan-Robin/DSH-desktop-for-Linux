@@ -47,6 +47,7 @@ contextBridge.exposeInMainWorld('desktop', {
   // files panel: search & review tabs
   wsSearch: (root, query) => ipcRenderer.invoke('ws:search', { root, query }),
   wsGit: (root) => ipcRenderer.invoke('ws:git', { root }),
+  gitDetect: (root) => ipcRenderer.invoke('git:detect', root),
   // quick input history
   quickHistory: (arg) => ipcRenderer.invoke('quick:history', arg),
   // session export + prompt templates

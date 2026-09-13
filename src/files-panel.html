@@ -251,7 +251,9 @@
 </div>
 
 <div class="page" id="page-term">
-  <div id="term-host" style="flex:1; overflow:hidden;"></div>
+  <div id="term-wrap" style="flex:1; min-height:0; background:#1e1e1e; border-radius:6px; margin:6px; padding:6px 4px 6px 8px; display:flex;">
+    <div id="term-host" style="flex:1; min-width:0; overflow:hidden;"></div>
+  </div>
   <div id="term-status" class="trunc" style="padding:2px 10px 6px;"></div>
 </div>
 
@@ -451,14 +453,30 @@
       els.termHost.textContent = '';
       term = null;
     }
-    if (!window.Terminal) { // xterm not loaded (dependency missing in this install)
-      els.termStatus.textContent = d().termNoPlugin;
+    if (!window.Terminal) { // xterm failed to load — say exactly which script failed
+      const srcs = Array.from(document.querySelectorAll('script[src*="xterm"]'))
+        .map((x) => x.getAttribute('src')).join(' , ') || '(未找到 script 标签)';
+      els.termStatus.textContent = `xterm 未加载，脚本路径: ${srcs}`;
+      return;
+    }
+    if (!window.FitAddon) {
+      els.termStatus.textContent = 'xterm 已加载但 FitAddon 缺失';
       return;
     }
     els.termStatus.textContent = d().termStarting;
     const t = new window.Terminal({
       fontFamily: 'ui-monospace, Consolas, monospace', fontSize: 12,
-      theme: { background: 'rgba(0,0,0,0)' }, allowProposedApi: true,
+      // VS Code terminal look: dark panel, bright-ish foreground, 12px mono.
+      theme: {
+        background: '#1e1e1e', foreground: '#cccccc', cursor: '#cccccc',
+        selectionBackground: '#264f78', black: '#000000', red: '#cd3131',
+        green: '#0dbc79', yellow: '#e5e510', blue: '#2472c8', magenta: '#bc3fbc',
+        cyan: '#11a8cd', white: '#e5e5e5',
+        brightBlack: '#666666', brightRed: '#f14c4c', brightGreen: '#23d18b',
+        brightYellow: '#f5f543', brightBlue: '#3b8eea', brightMagenta: '#d670d6',
+        brightCyan: '#29b8db', brightWhite: '#e5e5e5',
+      },
+      cursorBlink: true, allowProposedApi: true,
     });
     const fit = new window.FitAddon.FitAddon();
     t.loadAddon(fit);
@@ -483,7 +501,10 @@
         else if (msg.type === 'error') els.termStatus.textContent = msg.message || d().termNoPlugin;
       };
       ws.onclose = () => { if (term && term.ws === ws) { term.dead = true; els.termStatus.textContent = d().termClosed + ' — ' + d().termReconnect; } };
-      ws.onerror = () => { els.termStatus.textContent = d().termNoPlugin; };
+      ws.onerror = () => {
+        els.termStatus.textContent =
+          `终端连接失败 ws://127.0.0.1:${port}/api/shell（伴生插件是否在跑？）`;
+      };
     };
     // wait one stats tick so __dshPort is fresh
     if (window.__dshPort) connect(); else refreshStats().then(connect);
@@ -502,9 +523,28 @@
     els.gitFiles.textContent = '';
     els.diff.textContent = '';
     if (!root) { els.gitBranch.textContent = d().gitNone; return; }
-    const r = await window.desktop.wsGit(root);
-    if (!r || !r.ok) { els.gitBranch.textContent = d().gitNone; return; }
-    els.gitBranch.textContent = r.branch + (r.files.length ? ` · ${r.files.length}` : ` ${d().gitClean}`);
+    let r = null;
+    try {
+      r = await window.desktop.wsGit(root);
+      if (r && !r.ok) {
+        // Workspace itself may not be a repo (e.g. a handoff folder) while the
+        // projects live in subdirectories — probe for one and use it.
+        const alt = await window.desktop.gitDetect(root);
+        if (alt && alt !== root) {
+          const r2 = await window.desktop.wsGit(alt);
+          if (r2 && r2.ok) { r = r2; r.root = alt; }
+        }
+      }
+    } catch (e) {
+      els.gitBranch.textContent = `git 调用异常: ${e && e.message ? e.message : e}`;
+      return;
+    }
+    if (!r || !r.ok) {
+      els.gitBranch.textContent = `git 读取失败: ${(r && r.error) || '未知'} · 已探测子目录仍未找到仓库 · root=${root}`;
+      return;
+    }
+    els.gitBranch.textContent = r.branch + (r.files.length ? ` · ${r.files.length}` : ` ${d().gitClean}`)
+      + (r.root && r.root !== root ? ` · ${r.root.split('/').pop()}` : '');
     for (const f of r.files) {
       const div = document.createElement('div');
       div.className = 'gfile';
