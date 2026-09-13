@@ -194,7 +194,9 @@ class Tracker {
         ttftMs: this.turnFirstChunkAt && this.turnStartedAt
           ? Math.max(0, this.turnFirstChunkAt - this.turnStartedAt) : null,
         durationMs: dur > 0 ? dur : null,
-        tokensPerSec: dur > 0 && this.turnTokens.output > 0
+        // Require a meaningful window: a sub-tick duration divides by ~0 and
+        // yields absurd rates (e.g. 50000 tok/s) that are noise, not data.
+        tokensPerSec: dur >= 200 && this.turnTokens.output > 0
           ? Math.round((this.turnTokens.output / (dur / 1000)) * 10) / 10 : null,
         cacheHitRate: inTok > 0
           ? Math.round((this.turnTokens.cacheRead / inTok) * 1000) / 1000 : null,

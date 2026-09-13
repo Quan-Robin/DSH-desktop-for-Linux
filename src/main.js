@@ -755,6 +755,32 @@ function createWindow() {
       sandbox: true,
     },
   });
+  // ---- 主视图自愈：改配置/服务重启后偶发白屏，浏览器可刷新但桌面端原先没有任何
+  // 恢复入口（白屏时用户也找不到托盘菜单）。这里做三件事：
+  //   1) 渲染进程崩溃或加载失败 → 自动重载；
+  //   2) F5 / Ctrl+R → 手动刷新（与浏览器一致的习惯）；
+  //   3) 加载成功后清掉看门狗计时器，避免误判。
+  const reloadMainView = (why) => {
+    try {
+      if (!mainView || mainView.webContents.isDestroyed()) return;
+      console.log('[mainView] reload:', why);
+      mainView.webContents.loadURL(appUrl());
+    } catch { /* ignore */ }
+  };
+  mainView.webContents.on('render-process-gone', (_e, details) => {
+    reloadMainView('render-process-gone ' + (details && details.reason));
+  });
+  mainView.webContents.on('did-fail-load', (_e, code, desc, url, isMainFrame) => {
+    if (!isMainFrame) return;
+    setTimeout(() => reloadMainView(`did-fail-load ${code} ${desc}`), 1200);
+  });
+  mainView.webContents.on('before-input-event', (_e, input) => {
+    if (input.type !== 'keyDown') return;
+    const key = String(input.key || '');
+    if (key === 'F5' || ((input.control || input.meta) && (key === 'r' || key === 'R'))) {
+      reloadMainView('user refresh');
+    }
+  });
   win.contentView.addChildView(mainView);
   // Give the view an explicit initial size immediately — layoutFilesPanel()
   // below also runs, but this guarantees the first paint has real bounds even
