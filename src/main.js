@@ -2142,7 +2142,19 @@ async function doRefresh() {
   // synchronous zstd/parse ever runs on the main process.
   balanceState.turnCost = sess ? balanceApi.costOfByModel(sess.userMsgByModel, pricing) : 0;
   checkTurnEnd(sess);
-  balanceState.hitRate = 0; // server path has no per-session hit rate; kept for compatibility
+  // Cache hit rate for the ACTIVE session: cacheRead / (input + cacheRead).
+  // This used to be hardcoded 0 ("server path has no per-session hit rate"),
+  // which is why the overview strip always showed 0.0% even though the session
+  // files carry cacheReadTokens on nearly every usage event.
+  {
+    const byModel = (sess && sess.byModel) || usage.byModel || {};
+    let hit = 0; let miss = 0;
+    for (const v of Object.values(byModel)) {
+      hit += v.cacheRead || 0;
+      miss += v.input || 0;
+    }
+    balanceState.hitRate = (hit + miss) > 0 ? hit / (hit + miss) : 0;
+  }
   if (plugin) balanceState.dshTurn = plugin.state.turn; // 'working' | 'idle' (plugin only)
   balanceState.lastTurnStats = plugin ? plugin.state.lastTurn : null; // TTFT/speed/cache for the stats strip
   checkPluginError(plugin && plugin.state);
