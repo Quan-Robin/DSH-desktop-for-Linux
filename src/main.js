@@ -2039,6 +2039,20 @@ async function doRefresh() {
   balanceState.currentId = activeId;
   // Main-side workspace fallback: when the page bridge has not reported a
   // workspace snapshot, still give the files panel the active session's cwd.
+  // The companion plugin reports the active workspace directly in /api/state,
+  // while /api/usage sessions carry no `cwd`. Without this the panel's active
+  // root stayed empty and the changes tab always said "not a git workspace".
+  const pluginWorkspace = plugin && plugin.state && plugin.state.workspace;
+  if (pluginWorkspace) {
+    workspaceState.currentPath = pluginWorkspace;
+    if (!workspaceState.list.some((w) => w.path === pluginWorkspace)) {
+      workspaceState.list.push({
+        id: pluginWorkspace,
+        title: path.basename(pluginWorkspace) || pluginWorkspace,
+        path: pluginWorkspace,
+      });
+    }
+  }
   const activeCwd = cwdById.get(activeId);
   if (activeCwd) {
     workspaceState.currentPath = activeCwd;
@@ -2103,14 +2117,15 @@ async function doRefresh() {
     if (official !== convLastOfficial) { convLastOfficial = official; convOfficialStableAt = now; }
     if (turnGrew) {
       // Conversation in progress: estimate = official at its start − turn cost.
-      if (convDone && convFrozenEst != null) {
-        // Back-to-back turns: the previous turn's billing usually has NOT
-        // settled yet (~3 min lag), so `official` is still the pre-turn
-        // value. Re-base on the frozen post-turn estimate instead of letting
-        // the stale official carry the previous turn's cost forever; take
-        // the min so a settled (lower) official or third-party spend wins.
+      // Only re-base on the frozen estimate while the official balance is still
+      // lagging (~3 min billing delay). Once it has settled it ALREADY includes the
+      // previous turn's charge — re-basing on the lower frozen estimate there would
+      // subtract that turn a second time (the "estimate keeps subtracting after the
+      // official balance settled" bug).
+      const settled = (now - convOfficialStableAt) >= 60_000;
+      if (convDone && convFrozenEst != null && !settled) {
         convBase = Math.min(convFrozenEst, official);
-      } else if (convBase == null) {
+      } else {
         convBase = official;
       }
       convDone = false;

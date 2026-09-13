@@ -519,7 +519,7 @@ const TERMINAL_UPGRADE_SHAPES = [
     ? ctx.server.registerUpgrade({ path: '/api/shell', handler }) : false),
 ];
 
-function tryAttachTerminal(ctx) {
+function tryAttachTerminal(ctx, tracker) {
   let WebSocketServer;
   try { WebSocketServer = require('ws').WebSocketServer; } catch { return null; } // ws not bundled
   const wss = new WebSocketServer({ noServer: true });
@@ -541,7 +541,13 @@ function tryAttachTerminal(ctx) {
             shell: msg.shell,
             rows: Number(msg.rows),
             cols: Number(msg.cols),
-            cwd: tracker.workspaceOf(tracker.currentSessionId) || undefined,
+            // Terminal must open in the CURRENT WORKSPACE (the user expects a
+            // prompt in the active project dir). Prefer the session's learned cwd,
+            // then the workspace the plugin reports in /api/state, then dsh's own
+            // default. Without the workspace fallback the shell landed in $HOME.
+            cwd: tracker.workspaceOf(tracker.currentSessionId)
+              || (tracker.state && tracker.state().workspace)
+              || undefined,
           });
           if (!handle) { send({ type: 'error', message: 'spawnTerminal not available in this dsh build' }); return; }
           sessions.add(ws);
@@ -709,7 +715,7 @@ module.exports = function apply(ctx) {
   // WebSocket; each socket is bridged to one interactive PTY. Requires the
   // `ws` package (npm-installed plugins get it automatically; the desktop's
   // copy-install brings it along too). Degrades silently when absent.
-  const terminal = tryAttachTerminal(ctx);
+  const terminal = tryAttachTerminal(ctx, tracker);
 
   // Diagnostics on the state endpoint so the desktop (and humans) can see
   // which adapters actually worked — essential while the plugin API is still
