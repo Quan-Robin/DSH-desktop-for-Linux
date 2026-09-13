@@ -266,6 +266,9 @@
 </div>
 <!-- xterm is a plain-JS dependency; resolved relative to this file both in
      dev (node_modules on disk) and packaged (inside the asar). -->
+<!-- xterm 的样式表必须一起加载：缺它时 xterm 内部那个用于捕获输入的
+     helper textarea（本应不可见）会以白色输入框的样子显示在终端上方。 -->
+<link rel="stylesheet" href="../node_modules/@xterm/xterm/css/xterm.css">
 <script src="../node_modules/@xterm/xterm/lib/xterm.js"></script>
 <script src="../node_modules/@xterm/addon-fit/lib/addon-fit.js"></script>
 <script>

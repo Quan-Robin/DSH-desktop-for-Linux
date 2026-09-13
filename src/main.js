@@ -8,7 +8,7 @@
 //   3. Manage a tray icon: show/hide window, open in browser, quit (kills dsh).
 //   4. Persist a small config in the userData directory.
 
-const { app, BrowserWindow, WebContentsView, Tray, Menu, Notification, dialog, shell, nativeImage, ipcMain, globalShortcut, screen } = require('electron');
+const { app, BrowserWindow, WebContentsView, Tray, Menu, Notification, dialog, shell, nativeImage, ipcMain, globalShortcut, screen, clipboard } = require('electron');
 const { autoUpdater } = require('electron-updater');
 const { spawn, execFile } = require('node:child_process');
 const fs = require('node:fs');
@@ -111,6 +111,7 @@ const I18N = {
     buildFailNoDeb: '未在 dist/ 中找到 deb 产物',
     buildDoneTitle: '构建完成', buildDoneBody: '请求管理员授权安装…',
     installFailTitle: '安装失败',
+    copyCommand: '复制安装命令', copiedBody: '安装命令已复制到剪贴板',
     installFailPkexec: '无法启动 pkexec：{err}\n可手动执行：sudo dpkg -i "{deb}"',
     installDoneMsg: '新版本已安装，应用即将重启。', installFailExit: 'dpkg 返回码 {code}。\n可手动执行：sudo dpkg -i "{deb}"',
     updateDownloadedMsg: '新版本已下载完成，是否立即重启安装？',
@@ -187,6 +188,7 @@ const I18N = {
     buildFailNoDeb: 'No deb artifact found in dist/',
     buildDoneTitle: 'Build finished', buildDoneBody: 'Requesting admin authorization to install…',
     installFailTitle: 'Install failed',
+    copyCommand: 'Copy install command', copiedBody: 'Install command copied to clipboard',
     installFailPkexec: 'Could not start pkexec: {err}\nRun manually: sudo dpkg -i "{deb}"',
     installDoneMsg: 'The new version is installed — the app will restart now.', installFailExit: 'dpkg exited with code {code}.\nRun manually: sudo dpkg -i "{deb}"',
     updateDownloadedMsg: 'A new version has been downloaded. Restart and install now?',
@@ -1109,6 +1111,32 @@ function buildAndInstall() {
       notify(t('buildFailTitle'), t('buildFailExit', { code }));
       return;
     }
+// 安装失败时给出**一键复制**的安装命令（手动敲 sudo dpkg -i <长路径> 太麻烦）。
+function offerInstallCommand(win, detail, deb) {
+  const cmd = `sudo dpkg -i "${deb}"`;
+  const opts = {
+    type: 'error',
+    title: t('installFailTitle'),
+    message: detail,
+    detail: cmd,
+    buttons: [t('copyCommand'), t('cancel')],
+    defaultId: 0,
+    cancelId: 1,
+    noLink: true,
+  };
+  try {
+    const choice = win && !win.isDestroyed()
+      ? dialog.showMessageBoxSync(win, opts)
+      : dialog.showMessageBoxSync(opts);
+    if (choice === 0) {
+      clipboard.writeText(cmd);
+      notify(t('installFailTitle'), t('copiedBody'));
+    }
+  } catch {
+    dialog.showErrorBox(t('installFailTitle'), `${detail}\n\n${cmd}`);
+  }
+}
+
     const deb = newestDebIn(path.join(config.sourceDir, 'dist'));
     if (!deb) {
       notify(t('buildFailTitle'), t('buildFailNoDeb'));
@@ -1119,7 +1147,7 @@ function buildAndInstall() {
     inst.stdout.on('data', logDshLine);
     inst.stderr.on('data', logDshLine);
     inst.on('error', (err) => {
-      dialog.showErrorBox(t('installFailTitle'), t('installFailPkexec', { err: err.message, deb }));
+      offerInstallCommand(win, t('installFailPkexec', { err: err.message, deb }), deb);
     });
     inst.on('exit', (c) => {
       if (c === 0) {
@@ -1127,7 +1155,7 @@ function buildAndInstall() {
         app.relaunch();
         app.exit(0);
       } else {
-        dialog.showErrorBox(t('installFailTitle'), t('installFailExit', { code: c, deb }));
+        offerInstallCommand(win, t('installFailExit', { code: c, deb }), deb);
       }
     });
   });
