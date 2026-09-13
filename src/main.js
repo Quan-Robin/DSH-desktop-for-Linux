@@ -2115,47 +2115,26 @@ async function doRefresh() {
     balanceState.estimated = null;
   } else {
     if (official !== convLastOfficial) { convLastOfficial = official; convOfficialStableAt = now; }
+    const settled = (now - convOfficialStableAt) >= 60_000;
     if (turnGrew) {
-      // Conversation in progress: estimate = official at its start − turn cost.
-      // Only re-base on the frozen estimate while the official balance is still
-      // lagging (~3 min billing delay). Once it has settled it ALREADY includes the
-      // previous turn's charge — re-basing on the lower frozen estimate there would
-      // subtract that turn a second time (the "estimate keeps subtracting after the
-      // official balance settled" bug).
-      const settled = (now - convOfficialStableAt) >= 60_000;
-      if (settled) {
-        // Official balance has been unchanged for 60s: it already reflects any
-        // charge that has been billed, so show it AS IS. Subtracting the current
-        // turn here is what produced "official settled but the estimate still
-        // subtracts this conversation".
-        convBase = official;
-        convFrozenEst = null;
-        convDone = false;
-        balanceState.estimated = official;
-      } else {
-        if (convDone && convFrozenEst != null) convBase = Math.min(convFrozenEst, official);
-        else convBase = official;
-        convDone = false;
-        balanceState.estimated = convBase - turn;
-      }
-    } else if (now - convOfficialStableAt >= 60_000 && official !== convBase) {
-      // Official balance has SETTLED (unchanged for 60s) and it differs from our
-      // base: the server has already billed the finished conversation, so adopt
-      // it wholesale. Before this fix the adoption only happened when convDone
-      // was true, so a session whose turn/end was missed kept subtracting the
-      // conversation cost from an already-settled official balance forever.
+      // A turn is actively producing tokens: the estimate must MOVE, so subtract
+      // this turn's cost from the base. Only re-base on the frozen estimate while
+      // the official balance is still lagging; if it already settled it includes
+      // the previous turn, so using the lower frozen value would double-charge.
+      if (convDone && convFrozenEst != null && !settled) convBase = Math.min(convFrozenEst, official);
+      else convBase = official;
+      convDone = false;
+      balanceState.estimated = convBase - turn;
+    } else if (settled && official !== convBase) {
+      // No turn in flight and the official balance has been unchanged for 60s:
+      // it already reflects everything billed, so show it as-is instead of
+      // keeping the conversation's cost subtracted.
       convBase = official;
       convFrozenEst = null;
       convDone = false;
       balanceState.estimated = official;
     } else if (convDone) {
-      // Conversation finished but the official balance has not settled yet
-      // (~3 min billing lag): hold the frozen post-turn estimate.
       balanceState.estimated = convFrozenEst != null ? convFrozenEst : official;
-    } else if (convBase != null) {
-      // Conversation still in progress, no new tokens this tick (e.g. a
-      // subagent working silently): keep the running estimate.
-      balanceState.estimated = convBase - turn;
     } else {
       // Idle: follow the official balance.
       convBase = official;
