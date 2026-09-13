@@ -597,6 +597,8 @@ function tryAttachTerminal(ctx, tracker) {
 // ── entry point ──────────────────────────────────────────────────────────
 
 module.exports = function apply(ctx) {
+  // 方案甲：把上游 UI 缺陷直接打进前端 bundle（幂等/可回滚/失配安全）
+  try { require('./upstream-patch')(ctx); } catch { /* never block startup */ }
   const tracker = new Tracker();
 
   const events = tryAttachEvents(ctx, tracker);
