@@ -22,7 +22,13 @@ const PATCHES = [
         + '拖到底也无法折叠（能置 0 的 toggleSidebar 没有任何按钮调用）。'
         + '这里让"拖到阈值以下"直接折叠为 0 → 渲染成 56px 图标栏。',
     find: 'd.layoutInfo.sidebar = clampWidth(px, 264, 420);',
-    replace: 'd.layoutInfo.sidebar = px < 160 ? 0 : clampWidth(px, 264, 420);',
+    // 状态相关阈值：
+    //  * 已折叠（sidebar === 0，渲染为 56px 图标栏）时，只要往右拖过 64px 就展开
+    //    —— 否则拖动基准是 56，需要拖 100+px 才越过阈值，表现为"拖不出来"；
+    //  * 已展开时，往左拖到 160px 以下即折叠。
+    replace: 'd.layoutInfo.sidebar = d.layoutInfo.sidebar === 0'
+      + ' ? (px > 64 ? clampWidth(px, 264, 420) : 0)'
+      + ' : (px < 160 ? 0 : clampWidth(px, 264, 420));',
   },
 ];
 
